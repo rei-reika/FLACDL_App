@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">FLACDL Direct Tester</string>
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_search">Search</string>
+    <string name="nav_handoff">Handoff</string>
+    <string name="nav_worker">Worker</string>
+    <string name="nav_download">Download</string>
+    <string name="mode_demo">Demo Mode</string>
+    <string name="mode_live">Live Mode</string>
+    <string name="btn_test_api_connection">Test API Connection</string>
+    <string name="btn_start_new_test">Start New Test</string>
+    <string name="btn_select">Select</string>
+    <string name="btn_create_handoff">Create Handoff</string>
+    <string name="btn_cancel">Cancel</string>
+</resources>

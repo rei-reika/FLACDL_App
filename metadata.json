@@ -1,0 +1,6 @@
+{
+  "name": "FLACDL Direct Tester",
+  "description": "Aplikasi pengujian teknis Control Plane API VPS dan Data Plane Lucida Worker secara langsung di Android.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
