@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.core.config.TestMode
 import com.example.core.config.TesterSessionConfig
 import com.example.data.model.DashboardMetrics
+import com.example.data.model.NetworkDiagnosticsReport
 import com.example.data.repository.TesterRepository
 import com.example.domain.TestApiConnectionUseCase
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,7 +19,8 @@ import kotlinx.coroutines.launch
 data class DashboardUiState(
     val config: TesterSessionConfig = TesterSessionConfig(),
     val metrics: DashboardMetrics = DashboardMetrics(),
-    val isTestingConnection: Boolean = false
+    val isTestingConnection: Boolean = false,
+    val networkDiagnostics: NetworkDiagnosticsReport = NetworkDiagnosticsReport()
 )
 
 class DashboardViewModel(
@@ -31,12 +33,14 @@ class DashboardViewModel(
     val uiState: StateFlow<DashboardUiState> = combine(
         repository.configRepository.config,
         repository.dashboardMetrics,
-        isTesting
-    ) { config, metrics, testing ->
+        isTesting,
+        repository.networkDiagnostics
+    ) { config, metrics, testing, diagnostics ->
         DashboardUiState(
             config = config,
             metrics = metrics,
-            isTestingConnection = testing
+            isTestingConnection = testing,
+            networkDiagnostics = diagnostics
         )
     }.stateIn(
         scope = viewModelScope,
@@ -53,6 +57,13 @@ class DashboardViewModel(
             } finally {
                 isTesting.value = false
             }
+        }
+    }
+
+    fun runNetworkDiagnostics() {
+        if (repository.networkDiagnostics.value.isRunning) return
+        viewModelScope.launch {
+            repository.runNetworkDiagnostics(requestsPerEndpoint = 10)
         }
     }
 

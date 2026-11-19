@@ -6,9 +6,11 @@ import com.example.core.security.UrlValidationResult
 import com.example.core.security.UrlValidator
 import com.example.data.model.ApiCallResult
 import com.example.data.model.DiagnosticReportRequest
+import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffRequest
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
+import com.example.data.model.NetworkLatencySample
 import com.example.data.model.SearchRequest
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
@@ -18,13 +20,20 @@ import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.Handshake
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.util.concurrent.TimeUnit
 
 /**
@@ -68,6 +77,161 @@ class OkHttpFlacdlApiClient(
         return executeTimedCall(request) { _, body, latencyMs ->
             parseHealthResponse(body, latencyMs)
         }
+    }
+
+    override suspend fun measureEndpointLatency(
+        config: TesterSessionConfig,
+        endpointPath: String,
+        requestCount: Int,
+        onSampleRecorded: ((NetworkLatencySample) -> Unit)?
+    ): EndpointDiagnosticsSummary = withContext(Dispatchers.IO) {
+        val apiConfig = when (val validation = ApiConfig.validateForLiveMode(config)) {
+            is ApiConfigValidation.Invalid -> {
+                val invalidSample = NetworkLatencySample(
+                    requestIndex = 1,
+                    endpointPath = endpointPath,
+                    totalDurationMs = 0L,
+                    isSuccess = false,
+                    errorMessage = validation.message
+                )
+                onSampleRecorded?.invoke(invalidSample)
+                return@withContext EndpointDiagnosticsSummary.fromSamples(
+                    endpointPath = endpointPath,
+                    samples = listOf(invalidSample)
+                )
+            }
+            is ApiConfigValidation.Valid -> validation.config
+        }
+
+        val count = requestCount.coerceAtLeast(1)
+        val url = apiConfig.buildEndpointUrl(endpointPath)
+        val samples = mutableListOf<NetworkLatencySample>()
+
+        for (index in 1..count) {
+            val timingListener = CallTimingListener()
+            // Shallow builder shares the exact same ConnectionPool, Dispatcher, and timeouts as `client`.
+            val instrumentedClient = client.newBuilder()
+                .eventListener(timingListener)
+                .build()
+            val request = buildVpsGetRequest(url, apiConfig.bearerToken)
+            val startNanos = System.nanoTime()
+
+            val sample = try {
+                instrumentedClient.newCall(request).execute().use { response ->
+                    val bodyText = response.body?.string().orEmpty()
+                    val totalMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+                    val errorMsg = if (!response.isSuccessful) {
+                        val handled = NetworkErrorHandler.fromHttpResponse(
+                            httpCode = response.code,
+                            httpMessage = response.message,
+                            rawBody = bodyText,
+                            retryAfterHeader = response.header("Retry-After")
+                        )
+                        LogSanitizer.redactSensitive(handled.userMessage)
+                    } else {
+                        null
+                    }
+                    NetworkLatencySample(
+                        requestIndex = index,
+                        endpointPath = endpointPath,
+                        dnsLookupMs = timingListener.dnsLookupMs(),
+                        tcpConnectMs = timingListener.tcpConnectMs(),
+                        tlsHandshakeMs = timingListener.tlsHandshakeMs(),
+                        totalDurationMs = totalMs,
+                        httpStatusCode = response.code,
+                        isSuccess = response.isSuccessful,
+                        errorMessage = errorMsg
+                    )
+                }
+            } catch (e: Exception) {
+                val totalMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)
+                val handled = NetworkErrorHandler.fromException(e)
+                NetworkLatencySample(
+                    requestIndex = index,
+                    endpointPath = endpointPath,
+                    dnsLookupMs = timingListener.dnsLookupMs(),
+                    tcpConnectMs = timingListener.tcpConnectMs(),
+                    tlsHandshakeMs = timingListener.tlsHandshakeMs(),
+                    totalDurationMs = totalMs,
+                    httpStatusCode = handled.httpStatusCode,
+                    isSuccess = false,
+                    errorMessage = LogSanitizer.redactSensitive(handled.userMessage)
+                )
+            }
+
+            samples.add(sample)
+            onSampleRecorded?.invoke(sample)
+        }
+
+        EndpointDiagnosticsSummary.fromSamples(endpointPath, samples)
+    }
+
+    /**
+     * OkHttp [EventListener] measuring per-call DNS, TCP connect, and TLS handshake durations
+     * using a monotonic clock ([System.nanoTime]). Returns null for phases skipped via connection reuse.
+     */
+    internal class CallTimingListener(
+        private val clockNanos: () -> Long = System::nanoTime
+    ) : EventListener() {
+        @Volatile private var dnsStartNanos: Long? = null
+        @Volatile private var dnsDurationNanos: Long? = null
+        @Volatile private var connectStartNanos: Long? = null
+        @Volatile private var connectEndNanos: Long? = null
+        @Volatile private var tlsStartNanos: Long? = null
+        @Volatile private var tlsDurationNanos: Long? = null
+
+        override fun dnsStart(call: Call, domainName: String) {
+            dnsStartNanos = clockNanos()
+        }
+
+        override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<InetAddress>) {
+            dnsStartNanos?.let { start ->
+                dnsDurationNanos = (clockNanos() - start).coerceAtLeast(0L)
+            }
+        }
+
+        override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
+            connectStartNanos = clockNanos()
+        }
+
+        override fun secureConnectStart(call: Call) {
+            tlsStartNanos = clockNanos()
+        }
+
+        override fun secureConnectEnd(call: Call, handshake: Handshake?) {
+            tlsStartNanos?.let { start ->
+                tlsDurationNanos = (clockNanos() - start).coerceAtLeast(0L)
+            }
+        }
+
+        override fun connectEnd(
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
+            protocol: Protocol?
+        ) {
+            connectEndNanos = clockNanos()
+        }
+
+        override fun connectFailed(
+            call: Call,
+            inetSocketAddress: InetSocketAddress,
+            proxy: Proxy,
+            protocol: Protocol?,
+            ioe: IOException
+        ) {
+            connectEndNanos = clockNanos()
+        }
+
+        fun dnsLookupMs(): Long? = dnsDurationNanos?.let { TimeUnit.NANOSECONDS.toMillis(it) }
+
+        fun tcpConnectMs(): Long? {
+            val start = connectStartNanos ?: return null
+            val end = tlsStartNanos ?: connectEndNanos ?: return null
+            return TimeUnit.NANOSECONDS.toMillis((end - start).coerceAtLeast(0L))
+        }
+
+        fun tlsHandshakeMs(): Long? = tlsDurationNanos?.let { TimeUnit.NANOSECONDS.toMillis(it) }
     }
 
     override suspend fun searchCatalog(

@@ -224,6 +224,7 @@ fun TesterAppRoot(
                         DashboardScreen(
                             uiState = dashboardState,
                             onTestApiConnection = { dashboardViewModel.testApiConnection() },
+                            onRunNetworkDiagnostics = { dashboardViewModel.runNetworkDiagnostics() },
                             onStartNewTest = {
                                 dashboardViewModel.startNewTest()
                                 workerMonitorViewModel.resetHistory()

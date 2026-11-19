@@ -3,8 +3,10 @@ package com.example.data.remote
 import com.example.core.config.TesterSessionConfig
 import com.example.data.model.ApiCallResult
 import com.example.data.model.DiagnosticReportRequest
+import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
+import com.example.data.model.NetworkLatencySample
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
 import com.example.data.model.WorkerPollResponse
@@ -14,6 +16,12 @@ import com.example.data.model.WorkerPollResponse
  */
 interface FlacdlApiClient {
     suspend fun checkVpsHealth(config: TesterSessionConfig): ApiCallResult<HealthCheckInfo>
+    suspend fun measureEndpointLatency(
+        config: TesterSessionConfig,
+        endpointPath: String,
+        requestCount: Int = 10,
+        onSampleRecorded: ((NetworkLatencySample) -> Unit)? = null
+    ): EndpointDiagnosticsSummary
     suspend fun searchTracks(config: TesterSessionConfig, query: String): ApiCallResult<List<SearchTrackItem>>
     suspend fun searchCatalog(config: TesterSessionConfig, query: String): ApiCallResult<SearchResponse>
     suspend fun createHandoff(config: TesterSessionConfig, trackUrl: String): ApiCallResult<HandoffResponse>

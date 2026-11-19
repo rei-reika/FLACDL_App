@@ -250,3 +250,57 @@ data class DashboardMetrics(
     val latestHealthInfo: HealthCheckInfo? = null,
     val isHealthSimulated: Boolean = false
 )
+
+/**
+ * Single sequential network latency probe result for Network Diagnostics.
+ * DNS / TCP / TLS values are nullable when OkHttp reuses an existing pooled connection.
+ */
+data class NetworkLatencySample(
+    val requestIndex: Int,
+    val endpointPath: String,
+    val dnsLookupMs: Long? = null,
+    val tcpConnectMs: Long? = null,
+    val tlsHandshakeMs: Long? = null,
+    val totalDurationMs: Long = 0L,
+    val httpStatusCode: Int? = null,
+    val isSuccess: Boolean = false,
+    val errorMessage: String? = null
+)
+
+data class EndpointDiagnosticsSummary(
+    val endpointPath: String,
+    val samples: List<NetworkLatencySample> = emptyList(),
+    val successCount: Int = 0,
+    val failureCount: Int = 0,
+    val minLatencyMs: Long? = null,
+    val avgLatencyMs: Long? = null,
+    val maxLatencyMs: Long? = null
+) {
+    companion object {
+        fun fromSamples(
+            endpointPath: String,
+            samples: List<NetworkLatencySample>
+        ): EndpointDiagnosticsSummary {
+            val successCount = samples.count { it.isSuccess }
+            val failureCount = samples.size - successCount
+            val durations = samples.map { it.totalDurationMs }
+            return EndpointDiagnosticsSummary(
+                endpointPath = endpointPath,
+                samples = samples,
+                successCount = successCount,
+                failureCount = failureCount,
+                minLatencyMs = durations.minOrNull(),
+                avgLatencyMs = if (durations.isNotEmpty()) durations.sum() / durations.size else null,
+                maxLatencyMs = durations.maxOrNull()
+            )
+        }
+    }
+}
+
+data class NetworkDiagnosticsReport(
+    val isRunning: Boolean = false,
+    val isSimulated: Boolean = false,
+    val progressNote: String = "",
+    val endpoints: List<EndpointDiagnosticsSummary> = emptyList(),
+    val errorMessage: String? = null
+)

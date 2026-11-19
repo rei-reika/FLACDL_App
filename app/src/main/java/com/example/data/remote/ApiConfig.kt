@@ -19,6 +19,7 @@ data class ApiConfig(
     val baseUrl: String,
     val bearerToken: String,
     val healthEndpointPath: String = "/poc/v1/health",
+    val authMeEndpointPath: String = "/poc/v1/auth/me",
     val searchEndpointPath: String = "/poc/v1/search",
     val handoffEndpointPath: String = "/poc/v1/handoff",
     val diagnosticReportPath: String = "/poc/v1/report",

@@ -7,6 +7,8 @@ import com.example.core.security.LogSanitizer
 import com.example.core.security.UrlValidationResult
 import com.example.core.security.UrlValidator
 import com.example.data.model.ConnectionStatus
+import com.example.data.model.EndpointDiagnosticsSummary
+import com.example.data.model.NetworkLatencySample
 import com.example.data.model.WorkerJobStatus
 import com.example.data.remote.ApiConfig
 import com.example.data.remote.ApiConfigValidation
@@ -339,5 +341,73 @@ class FlacdlTesterUnitTest {
         assertTrue(result.hasFlacSignature)
         assertTrue(result.streamInfoSummary.contains("44100 Hz"))
         assertEquals(64, result.sha256Fingerprint.length)
+    }
+
+    @Test
+    fun `endpoint diagnostics summary computes min avg max and success failure counts`() {
+        val samples = listOf(
+            NetworkLatencySample(1, "/poc/v1/health", dnsLookupMs = 15, tcpConnectMs = 20, tlsHandshakeMs = 30, totalDurationMs = 120, httpStatusCode = 200, isSuccess = true),
+            NetworkLatencySample(2, "/poc/v1/health", totalDurationMs = 40, httpStatusCode = 200, isSuccess = true),
+            NetworkLatencySample(3, "/poc/v1/health", totalDurationMs = 50, httpStatusCode = 503, isSuccess = false, errorMessage = "HTTP 503")
+        )
+        val summary = EndpointDiagnosticsSummary.fromSamples("/poc/v1/health", samples)
+        assertEquals("/poc/v1/health", summary.endpointPath)
+        assertEquals(2, summary.successCount)
+        assertEquals(1, summary.failureCount)
+        assertEquals(40L, summary.minLatencyMs)
+        assertEquals(70L, summary.avgLatencyMs)
+        assertEquals(120L, summary.maxLatencyMs)
+    }
+
+    @Test
+    fun `okhttp call timing listener measures dns tcp excluding tls and tls handshake monotonically`() {
+        var nowMs = 1_000L
+        val listener = OkHttpFlacdlApiClient.CallTimingListener(clockNanos = { nowMs * 1_000_000L })
+        val dummyCall = OkHttpFlacdlApiClient.defaultOkHttpClient().newCall(
+            OkHttpFlacdlApiClient().buildVpsGetRequest("https://poc.flacdl.example/poc/v1/health", "tok")
+        )
+        val addr = java.net.InetSocketAddress.createUnresolved("poc.flacdl.example", 443)
+
+        // Fresh connection: DNS (12ms), TCP (25ms), TLS (40ms)
+        listener.dnsStart(dummyCall, "poc.flacdl.example")
+        nowMs += 12L
+        listener.dnsEnd(dummyCall, "poc.flacdl.example", emptyList())
+
+        listener.connectStart(dummyCall, addr, java.net.Proxy.NO_PROXY)
+        nowMs += 25L
+        listener.secureConnectStart(dummyCall)
+        nowMs += 40L
+        listener.secureConnectEnd(dummyCall, null)
+        listener.connectEnd(dummyCall, addr, java.net.Proxy.NO_PROXY, okhttp3.Protocol.HTTP_2)
+
+        assertEquals(12L, listener.dnsLookupMs())
+        assertEquals(25L, listener.tcpConnectMs())
+        assertEquals(40L, listener.tlsHandshakeMs())
+
+        // Reused pooled connection: no DNS/TCP/TLS callbacks -> all null
+        val reusedListener = OkHttpFlacdlApiClient.CallTimingListener(clockNanos = { nowMs * 1_000_000L })
+        assertNull(reusedListener.dnsLookupMs())
+        assertNull(reusedListener.tcpConnectMs())
+        assertNull(reusedListener.tlsHandshakeMs())
+    }
+
+    @Test
+    fun `demo mode network diagnostics runs 10 sequential requests for health and auth me`() = runTest {
+        val configRepo = SessionConfigRepository()
+        val repo = TesterRepository(configRepo)
+        val report = repo.runNetworkDiagnostics(requestsPerEndpoint = 10)
+
+        assertFalse(report.isRunning)
+        assertTrue(report.isSimulated)
+        assertEquals(2, report.endpoints.size)
+        assertEquals("/poc/v1/health", report.endpoints[0].endpointPath)
+        assertEquals("/poc/v1/auth/me", report.endpoints[1].endpointPath)
+        assertEquals(10, report.endpoints[0].samples.size)
+        assertEquals(10, report.endpoints[1].samples.size)
+        assertEquals(10, report.endpoints[0].successCount)
+        assertEquals(10, report.endpoints[1].successCount)
+        assertNotNull(report.endpoints[0].minLatencyMs)
+        assertNotNull(report.endpoints[0].avgLatencyMs)
+        assertNotNull(report.endpoints[0].maxLatencyMs)
     }
 }

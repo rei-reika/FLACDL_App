@@ -3,8 +3,10 @@ package com.example.data.remote
 import com.example.core.config.TesterSessionConfig
 import com.example.data.model.ApiCallResult
 import com.example.data.model.DiagnosticReportRequest
+import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
+import com.example.data.model.NetworkLatencySample
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
 import com.example.data.model.WorkerJobStatus
@@ -86,6 +88,33 @@ class DemoFlacdlApiClient : FlacdlApiClient {
             latencyMs = simulatedLatency,
             isSimulated = true
         )
+    }
+
+    override suspend fun measureEndpointLatency(
+        config: TesterSessionConfig,
+        endpointPath: String,
+        requestCount: Int,
+        onSampleRecorded: ((NetworkLatencySample) -> Unit)?
+    ): EndpointDiagnosticsSummary {
+        val count = requestCount.coerceAtLeast(1)
+        val samples = mutableListOf<NetworkLatencySample>()
+        for (i in 1..count) {
+            delay(35)
+            val sample = NetworkLatencySample(
+                requestIndex = i,
+                endpointPath = endpointPath,
+                dnsLookupMs = if (i == 1) 12L else null,
+                tcpConnectMs = if (i == 1) 18L else null,
+                tlsHandshakeMs = if (i == 1) 26L else null,
+                totalDurationMs = if (i == 1) 74L else (22L + (i % 4) * 3L),
+                httpStatusCode = 200,
+                isSuccess = true,
+                errorMessage = null
+            )
+            samples.add(sample)
+            onSampleRecorded?.invoke(sample)
+        }
+        return EndpointDiagnosticsSummary.fromSamples(endpointPath, samples)
     }
 
     override suspend fun searchCatalog(

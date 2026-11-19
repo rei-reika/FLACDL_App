@@ -8,8 +8,11 @@ import com.example.data.model.ApiCallResult
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.DashboardMetrics
 import com.example.data.model.DiagnosticReportRequest
+import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
+import com.example.data.model.NetworkDiagnosticsReport
+import com.example.data.model.NetworkLatencySample
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
 import com.example.data.model.WorkerJobStatus
@@ -46,6 +49,9 @@ class TesterRepository(
 
     private val _latestWorkerPoll = MutableStateFlow<WorkerPollResponse?>(null)
     val latestWorkerPoll: StateFlow<WorkerPollResponse?> = _latestWorkerPoll.asStateFlow()
+
+    private val _networkDiagnostics = MutableStateFlow(NetworkDiagnosticsReport())
+    val networkDiagnostics: StateFlow<NetworkDiagnosticsReport> = _networkDiagnostics.asStateFlow()
 
     private fun activeClient(config: TesterSessionConfig): FlacdlApiClient {
         return when (config.mode) {
@@ -94,6 +100,61 @@ class TesterRepository(
             }
             return result
         }
+    }
+
+    suspend fun runNetworkDiagnostics(requestsPerEndpoint: Int = 10): NetworkDiagnosticsReport {
+        val cfg = configRepository.config.value
+        val isSimulated = cfg.mode == TestMode.DEMO
+        val targetEndpoints = listOf(
+            cfg.healthEndpointPath.ifBlank { "/poc/v1/health" },
+            "/poc/v1/auth/me"
+        )
+        val count = requestsPerEndpoint.coerceAtLeast(1)
+        val completedSummaries = mutableListOf<EndpointDiagnosticsSummary>()
+
+        _networkDiagnostics.value = NetworkDiagnosticsReport(
+            isRunning = true,
+            isSimulated = isSimulated,
+            progressNote = "Menjalankan diagnostik (${targetEndpoints.first()} 0/$count)...",
+            endpoints = emptyList(),
+            errorMessage = null
+        )
+
+        val client = activeClient(cfg)
+        for (endpoint in targetEndpoints) {
+            val liveSamples = mutableListOf<NetworkLatencySample>()
+            val summary = client.measureEndpointLatency(
+                config = cfg,
+                endpointPath = endpoint,
+                requestCount = count,
+                onSampleRecorded = { sample ->
+                    liveSamples.add(sample)
+                    val inProgress = EndpointDiagnosticsSummary.fromSamples(endpoint, liveSamples.toList())
+                    _networkDiagnostics.value = NetworkDiagnosticsReport(
+                        isRunning = true,
+                        isSimulated = isSimulated,
+                        progressNote = "Mengukur GET $endpoint (${liveSamples.size}/$count)...",
+                        endpoints = completedSummaries + inProgress,
+                        errorMessage = null
+                    )
+                }
+            )
+            completedSummaries.add(summary)
+        }
+
+        val finalReport = NetworkDiagnosticsReport(
+            isRunning = false,
+            isSimulated = isSimulated,
+            progressNote = if (isSimulated) {
+                "Selesai (Simulasi Demo Mode — $count req/endpoint)."
+            } else {
+                "Selesai ($count request berurutan per endpoint)."
+            },
+            endpoints = completedSummaries.toList(),
+            errorMessage = null
+        )
+        _networkDiagnostics.value = finalReport
+        return finalReport
     }
 
     suspend fun searchCatalog(query: String): ApiCallResult<SearchResponse> {

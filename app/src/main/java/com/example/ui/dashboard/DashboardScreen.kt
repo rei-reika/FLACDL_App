@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,6 +42,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.core.security.LogSanitizer
+import com.example.data.model.EndpointDiagnosticsSummary
+import com.example.data.model.NetworkLatencySample
 import com.example.ui.components.ConnectionStatusBadge
 import com.example.ui.components.KeyValueTelemetryRow
 import com.example.ui.components.StatusPill
@@ -59,6 +62,7 @@ fun DashboardScreen(
     onTestApiConnection: () -> Unit,
     onStartNewTest: () -> Unit,
     onOpenConfigSheet: () -> Unit,
+    onRunNetworkDiagnostics: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -325,6 +329,107 @@ fun DashboardScreen(
                 }
             }
 
+            // Network Diagnostics Card (GET /poc/v1/health & GET /poc/v1/auth/me)
+            item {
+                val diag = uiState.networkDiagnostics
+                TesterSectionCard(modifier = Modifier.testTag("network_diagnostics_card")) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Speed,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Column {
+                                Text(
+                                    text = "Network Diagnostics",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "GET ${uiState.config.healthEndpointPath} & GET /poc/v1/auth/me (10x)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (diag.endpoints.isNotEmpty() && !diag.isRunning) {
+                            if (diag.isSimulated) {
+                                StatusPill(
+                                    text = "Simulasi Demo",
+                                    dotColor = StatusTesting,
+                                    containerColor = StatusTestingContainer
+                                )
+                            } else {
+                                StatusPill(
+                                    text = "Live Server",
+                                    dotColor = StatusConnected,
+                                    containerColor = StatusConnectedContainer
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = HairlineBorder)
+
+                    OutlinedButton(
+                        onClick = onRunNetworkDiagnostics,
+                        enabled = !diag.isRunning,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("run_diagnostics_button"),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                    ) {
+                        if (diag.isRunning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Outlined.Speed,
+                                contentDescription = null
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (diag.isRunning) "Running Diagnostics..." else "Run Diagnostics",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+
+                    if (diag.progressNote.isNotBlank()) {
+                        Text(
+                            text = diag.progressNote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (diag.endpoints.isEmpty() && !diag.isRunning) {
+                        Text(
+                            text = "Tekan Run Diagnostics untuk mengukur DNS, TCP, TLS, dan total latency (10 request berurutan per endpoint).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            diag.endpoints.forEach { summary ->
+                                EndpointDiagnosticsBlock(summary = summary)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Metrics Grid
             item {
                 Row(
@@ -499,6 +604,166 @@ private fun MetricBox(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2
+            )
+        }
+    }
+}
+
+@Composable
+private fun EndpointDiagnosticsBlock(
+    summary: EndpointDiagnosticsSummary
+) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, HairlineBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "GET ${summary.endpointPath}",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = JetBrainsMonoFamily
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "OK ${summary.successCount} / Fail ${summary.failureCount}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMonoFamily
+                    ),
+                    color = if (summary.failureCount == 0) StatusConnected else StatusDisconnected
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Min: ${summary.minLatencyMs?.let { "${it}ms" } ?: "-"}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Avg: ${summary.avgLatencyMs?.let { "${it}ms" } ?: "-"}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Max: ${summary.maxLatencyMs?.let { "${it}ms" } ?: "-"}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            HorizontalDivider(color = HairlineBorder)
+
+            // Compact monospaced table header
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "#",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.55f)
+                )
+                Text(
+                    text = "HTTP",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.95f)
+                )
+                Text(
+                    text = "Total",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1.1f)
+                )
+                Text(
+                    text = "DNS",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "TCP",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "TLS",
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            summary.samples.forEach { sample ->
+                LatencySampleRow(sample = sample)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LatencySampleRow(sample: NetworkLatencySample) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${sample.requestIndex}",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(0.55f)
+            )
+            Text(
+                text = sample.httpStatusCode?.toString() ?: "ERR",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = if (sample.isSuccess) StatusConnected else StatusDisconnected,
+                modifier = Modifier.weight(0.95f)
+            )
+            Text(
+                text = "${sample.totalDurationMs}ms",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1.1f)
+            )
+            Text(
+                text = sample.dnsLookupMs?.let { "${it}ms" } ?: "-",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = sample.tcpConnectMs?.let { "${it}ms" } ?: "-",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = sample.tlsHandshakeMs?.let { "${it}ms" } ?: "-",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (!sample.errorMessage.isNullOrBlank()) {
+            Text(
+                text = sample.errorMessage,
+                style = MaterialTheme.typography.labelSmall,
+                color = StatusDisconnected
             )
         }
     }
