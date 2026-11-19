@@ -3,15 +3,22 @@ package com.example
 import com.example.core.config.SessionConfigRepository
 import com.example.core.config.TestMode
 import com.example.core.config.TesterSessionConfig
+import com.example.core.security.InMemoryDeviceCredentialStore
 import com.example.core.security.LogSanitizer
 import com.example.core.security.UrlValidationResult
 import com.example.core.security.UrlValidator
+import com.example.data.model.ApiCallResult
+import com.example.data.model.AuthMeProfile
+import com.example.data.model.AuthSessionStatus
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.NetworkLatencySample
+import com.example.data.model.PairDeviceResponse
 import com.example.data.model.WorkerJobStatus
 import com.example.data.remote.ApiConfig
 import com.example.data.remote.ApiConfigValidation
+import com.example.data.remote.DemoFlacdlApiClient
+import com.example.data.remote.FlacdlApiClient
 import com.example.data.remote.NetworkErrorHandler
 import com.example.data.remote.OkHttpFlacdlApiClient
 import com.example.data.remote.PocJsonParser
@@ -409,5 +416,208 @@ class FlacdlTesterUnitTest {
         assertNotNull(report.endpoints[0].minLatencyMs)
         assertNotNull(report.endpoints[0].avgLatencyMs)
         assertNotNull(report.endpoints[0].maxLatencyMs)
+    }
+
+    @Test
+    fun `auth json parsers decode actual phase 2b pair and phase 3a auth me responses`() {
+        val pairJson = """
+            {
+              "status": "ok",
+              "device_id": "DEV-AABB11223344",
+              "device_name": "Pixel 9 Pro",
+              "user_id": 12345678,
+              "access_token": "tok_256bit_secret_sample",
+              "token_type": "Bearer",
+              "paired_at_wib": "2026-11-19 18:00:00 WIB"
+            }
+        """.trimIndent()
+        val parsedPair = OkHttpFlacdlApiClient.parsePairResponse(pairJson)
+        assertEquals("DEV-AABB11223344", parsedPair.deviceId)
+        assertEquals("Pixel 9 Pro", parsedPair.deviceName)
+        assertEquals(12345678L, parsedPair.userId)
+        assertEquals("tok_256bit_secret_sample", parsedPair.accessToken)
+
+        val authMeJson = """
+            {
+              "status": "ok",
+              "authenticated": true,
+              "auth_type": "android_device",
+              "device": {
+                "device_id": "DEV-AABB11223344",
+                "device_name": "Pixel 9 Pro",
+                "paired_at_wib": "2026-11-19 18:00:00 WIB",
+                "last_active_at_wib": "2026-11-19 18:05:00 WIB"
+              },
+              "user": {
+                "user_id": 12345678,
+                "username": "flacdl_tester",
+                "full_name": "FLACDL Tester",
+                "is_blocked": false
+              },
+              "package": {
+                "package_id": "donatur",
+                "package_name": "Donatur",
+                "status": "active",
+                "is_unlimited": false,
+                "days_remaining": 24
+              },
+              "quota": {
+                "daily_limit": 80,
+                "used_today": 5,
+                "active_reserved": 0,
+                "remaining_quota": 75,
+                "reset_countdown_wib": "5j 55m"
+              },
+              "settings": {
+                "audio_format": "flac"
+              }
+            }
+        """.trimIndent()
+        val me = OkHttpFlacdlApiClient.parseAuthMeResponse(authMeJson)
+        assertEquals("DEV-AABB11223344", me.deviceId)
+        assertEquals("flacdl_tester", me.username)
+        assertEquals("Donatur", me.packageName)
+        assertEquals(24, me.daysRemaining)
+        assertEquals(80, me.dailyLimit)
+        assertEquals(75, me.remainingQuota)
+    }
+
+    @Test
+    fun `device pairing restore network error preservation revocation and logout lifecycle`() = runTest {
+        val store = InMemoryDeviceCredentialStore()
+        var nextMeResult: ApiCallResult<AuthMeProfile> = ApiCallResult(
+            isSuccess = true,
+            httpStatusCode = 200,
+            data = AuthMeProfile(
+                deviceId = "DEV-LIVE001",
+                deviceName = "Pixel 9",
+                pairedAtWib = "2026-11-19 18:00:00 WIB",
+                lastActiveAtWib = "2026-11-19 18:01:00 WIB",
+                userId = 999L,
+                username = "tester",
+                fullName = "Tester",
+                isBlocked = false,
+                packageId = "gratis",
+                packageName = "Gratis",
+                packageStatus = "active",
+                isUnlimited = false,
+                daysRemaining = null,
+                dailyLimit = 10,
+                usedToday = 1,
+                activeReserved = 0,
+                remainingQuota = 9,
+                resetCountdownWib = "6j",
+                audioFormat = "flac"
+            )
+        )
+        var logoutCalled = 0
+
+        val fakeLiveClient: FlacdlApiClient = object : DemoFlacdlApiClient() {
+            override suspend fun pairDevice(
+                baseUrl: String,
+                pairingCode: String,
+                deviceName: String
+            ): ApiCallResult<PairDeviceResponse> {
+                if (pairingCode != "654321") {
+                    return ApiCallResult(
+                        isSuccess = false,
+                        httpStatusCode = 401,
+                        errorCode = "invalid_pairing_code",
+                        errorMessage = "Kode pairing tidak valid atau kedaluwarsa."
+                    )
+                }
+                return ApiCallResult(
+                    isSuccess = true,
+                    httpStatusCode = 200,
+                    data = PairDeviceResponse(
+                        deviceId = "DEV-LIVE001",
+                        deviceName = deviceName,
+                        userId = 999L,
+                        accessToken = "secret_live_device_token_256bit"
+                    )
+                )
+            }
+
+            override suspend fun fetchAuthMe(config: TesterSessionConfig): ApiCallResult<AuthMeProfile> {
+                return nextMeResult
+            }
+
+            override suspend fun logoutDevice(config: TesterSessionConfig): ApiCallResult<Boolean> {
+                logoutCalled += 1
+                return ApiCallResult(isSuccess = true, httpStatusCode = 200, data = true)
+            }
+        }
+
+        val repo1 = TesterRepository(
+            configRepository = SessionConfigRepository(),
+            liveClient = fakeLiveClient,
+            credentialStore = store
+        )
+
+        // 1. Wrong/expired pairing code rejected -> nothing stored
+        val badPair = repo1.pairWithTelegramCode("https://api.auditify.web.id", "000000", "Pixel 9")
+        assertFalse(badPair.isSuccess)
+        assertNull(store.loadSession())
+        assertEquals(AuthSessionStatus.UNAUTHENTICATED, repo1.authSession.value.status)
+
+        // 2. Valid pairing code succeeds -> stored securely & /auth/me authenticates
+        val okPair = repo1.pairWithTelegramCode("https://api.auditify.web.id", "654321", "Pixel 9")
+        assertTrue(okPair.isSuccess)
+        assertNotNull(store.loadSession())
+        assertEquals(AuthSessionStatus.AUTHENTICATED, repo1.authSession.value.status)
+        assertEquals("tester", repo1.authSession.value.profile?.username)
+
+        // 3. Simulated app restart (new repository instance with same credential store) restores session
+        val repoRestarted = TesterRepository(
+            configRepository = SessionConfigRepository(),
+            liveClient = fakeLiveClient,
+            credentialStore = store
+        )
+        val restored = repoRestarted.restoreSavedSession()
+        assertEquals(AuthSessionStatus.AUTHENTICATED, restored.status)
+        assertEquals(TestMode.LIVE, repoRestarted.configRepository.config.value.mode)
+
+        // 4. Network error during /auth/me MUST NOT delete valid stored token!
+        nextMeResult = ApiCallResult(
+            isSuccess = false,
+            httpStatusCode = null,
+            errorCode = "network_error",
+            errorMessage = "Tidak ada koneksi internet."
+        )
+        val offlineState = repoRestarted.refreshAuthSession()
+        assertEquals(AuthSessionStatus.NETWORK_ERROR, offlineState.status)
+        assertTrue(offlineState.hasStoredCredentials)
+        assertNotNull(store.loadSession())
+
+        // 5. Revoked token (HTTP 401) marks session REVOKED_OR_INVALID and clears stored credentials
+        nextMeResult = ApiCallResult(
+            isSuccess = false,
+            httpStatusCode = 401,
+            errorCode = "unauthorized",
+            errorMessage = "Token dicabut."
+        )
+        val revokedState = repoRestarted.refreshAuthSession()
+        assertEquals(AuthSessionStatus.REVOKED_OR_INVALID, revokedState.status)
+        assertFalse(revokedState.hasStoredCredentials)
+        assertNull(store.loadSession())
+
+        // 6. Re-pair and Logout -> calls POST /auth/logout and clears local store
+        nextMeResult = ApiCallResult(
+            isSuccess = true,
+            httpStatusCode = 200,
+            data = AuthMeProfile(
+                deviceId = "DEV-LIVE001", deviceName = "Pixel 9", pairedAtWib = "-", lastActiveAtWib = "-",
+                userId = 999L, username = "tester", fullName = "Tester", isBlocked = false,
+                packageId = "gratis", packageName = "Gratis", packageStatus = "active",
+                isUnlimited = false, daysRemaining = null, dailyLimit = 10, usedToday = 0,
+                activeReserved = 0, remainingQuota = 10, resetCountdownWib = "6j", audioFormat = "flac"
+            )
+        )
+        assertTrue(repoRestarted.pairWithTelegramCode("https://api.auditify.web.id", "654321", "Pixel 9").isSuccess)
+        val loggedOut = repoRestarted.logoutCurrentDevice()
+        assertEquals(1, logoutCalled)
+        assertEquals(AuthSessionStatus.UNAUTHENTICATED, loggedOut.status)
+        assertNull(store.loadSession())
+        assertEquals("", repoRestarted.configRepository.config.value.bearerToken)
     }
 }

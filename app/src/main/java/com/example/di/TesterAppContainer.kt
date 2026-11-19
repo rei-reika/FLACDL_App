@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.example.core.config.SessionConfigRepository
+import com.example.core.security.AndroidKeystoreTokenStore
 import com.example.data.repository.TesterRepository
 import com.example.domain.CreateHandoffUseCase
 import com.example.domain.PollWorkerStatusUseCase
@@ -20,7 +21,11 @@ import com.example.ui.worker.WorkerMonitorViewModel
 class TesterAppContainer(appContext: Context) {
 
     val sessionConfigRepository = SessionConfigRepository()
-    val testerRepository = TesterRepository(configRepository = sessionConfigRepository)
+    private val secureTokenStore = AndroidKeystoreTokenStore(appContext.applicationContext)
+    val testerRepository = TesterRepository(
+        configRepository = sessionConfigRepository,
+        credentialStore = secureTokenStore
+    )
     val directDownloadManager = DirectDownloadManager(context = appContext.applicationContext)
 
     private val testApiConnectionUseCase = TestApiConnectionUseCase(testerRepository)

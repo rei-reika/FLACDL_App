@@ -304,3 +304,61 @@ data class NetworkDiagnosticsReport(
     val endpoints: List<EndpointDiagnosticsSummary> = emptyList(),
     val errorMessage: String? = null
 )
+
+// =============================================================================
+// Phase 4C.1: Device Pairing & Authentication Models
+// =============================================================================
+
+enum class AuthSessionStatus(val label: String) {
+    UNAUTHENTICATED("Belum Ditautkan"),
+    RESTORING("Memulihkan Sesi"),
+    PAIRING("Menautkan Perangkat"),
+    AUTHENTICATED("Terhubung"),
+    REVOKED_OR_INVALID("Sesi Dicabut / Tidak Valid"),
+    NETWORK_ERROR("Offline (Sesi Tersimpan)")
+}
+
+data class PairDeviceResponse(
+    val deviceId: String,
+    val deviceName: String,
+    val userId: Long,
+    val accessToken: String,
+    val tokenType: String = "Bearer",
+    val pairedAtWib: String = "-"
+)
+
+data class AuthMeProfile(
+    val deviceId: String,
+    val deviceName: String,
+    val pairedAtWib: String,
+    val lastActiveAtWib: String,
+    val userId: Long,
+    val username: String,
+    val fullName: String,
+    val isBlocked: Boolean,
+    val packageId: String,
+    val packageName: String,
+    val packageStatus: String,
+    val isUnlimited: Boolean,
+    val daysRemaining: Int?,
+    val dailyLimit: Int?,
+    val usedToday: Int,
+    val activeReserved: Int,
+    val remainingQuota: Int?,
+    val resetCountdownWib: String,
+    val audioFormat: String
+)
+
+/**
+ * UI-safe device authentication state.
+ * NEVER stores or exposes plaintext Bearer token or pairing code.
+ */
+data class AuthSessionState(
+    val status: AuthSessionStatus = AuthSessionStatus.UNAUTHENTICATED,
+    val hasStoredCredentials: Boolean = false,
+    val isBusy: Boolean = false,
+    val profile: AuthMeProfile? = null,
+    val statusMessage: String = "Belum ditautkan. Buat kode 6 digit melalui /android di Telegram Bot.",
+    val errorMessage: String? = null,
+    val isSimulated: Boolean = false
+)

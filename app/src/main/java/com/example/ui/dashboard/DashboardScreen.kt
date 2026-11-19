@@ -1,5 +1,6 @@
 package com.example.ui.dashboard
 
+import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,11 +17,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
@@ -33,17 +37,25 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.core.security.LogSanitizer
+import com.example.data.model.AuthSessionStatus
 import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.NetworkLatencySample
+import com.example.data.repository.TesterRepository
 import com.example.ui.components.ConnectionStatusBadge
 import com.example.ui.components.KeyValueTelemetryRow
 import com.example.ui.components.StatusPill
@@ -63,6 +75,9 @@ fun DashboardScreen(
     onStartNewTest: () -> Unit,
     onOpenConfigSheet: () -> Unit,
     onRunNetworkDiagnostics: () -> Unit = {},
+    onPairDevice: (baseUrl: String, pairingCode: String, deviceName: String) -> Unit = { _, _, _ -> },
+    onRefreshAuthSession: () -> Unit = {},
+    onLogoutDevice: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -89,6 +104,227 @@ fun DashboardScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+
+            // Device Pairing & Authentication Card (Phase 4C.1)
+            item {
+                val auth = uiState.authSession
+                val effectiveBaseUrl = uiState.config.vpsBaseUrl.trim()
+                    .ifBlank { TesterRepository.DEFAULT_PRODUCTION_BASE_URL }
+                var pairingCode by remember { mutableStateOf("") }
+                var deviceName by remember {
+                    mutableStateOf(
+                        (Build.MODEL ?: "Android Device").trim().ifBlank { "Android Device" }
+                    )
+                }
+
+                TesterSectionCard(modifier = Modifier.testTag("device_auth_card")) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Link,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Column {
+                                Text(
+                                    text = "Pairing & Sesi Perangkat",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = LogSanitizer.maskUrlForDisplay(effectiveBaseUrl),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        val (pillDot, pillContainer) = when (auth.status) {
+                            AuthSessionStatus.AUTHENTICATED -> StatusConnected to StatusConnectedContainer
+                            AuthSessionStatus.RESTORING, AuthSessionStatus.PAIRING, AuthSessionStatus.NETWORK_ERROR ->
+                                StatusTesting to StatusTestingContainer
+                            AuthSessionStatus.UNAUTHENTICATED, AuthSessionStatus.REVOKED_OR_INVALID ->
+                                StatusDisconnected to MaterialTheme.colorScheme.surfaceVariant
+                        }
+                        StatusPill(
+                            text = auth.status.label,
+                            dotColor = pillDot,
+                            containerColor = pillContainer,
+                            modifier = Modifier.testTag("auth_status_pill")
+                        )
+                    }
+
+                    HorizontalDivider(color = HairlineBorder)
+
+                    Text(
+                        text = auth.statusMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (!auth.errorMessage.isNullOrBlank()) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                            border = BorderStroke(1.dp, StatusDisconnected.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = auth.errorMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StatusDisconnected,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp)
+                                    .testTag("auth_error_banner")
+                            )
+                        }
+                    }
+
+                    val profile = auth.profile
+                    if (auth.status == AuthSessionStatus.AUTHENTICATED && profile != null) {
+                        val userLabel = if (profile.username.isNotBlank()) {
+                            "${profile.fullName} (@${profile.username})"
+                        } else {
+                            "${profile.fullName} (ID ${profile.userId})"
+                        }
+                        val quotaLabel = if (profile.isUnlimited) {
+                            "Unlimited (Terpakai hari ini: ${profile.usedToday})"
+                        } else {
+                            "Sisa ${profile.remainingQuota ?: 0} / ${profile.dailyLimit ?: 0} (Terpakai: ${profile.usedToday})"
+                        }
+                        val pkgLabel = if (profile.daysRemaining != null) {
+                            "${profile.packageName} (${profile.daysRemaining} hari)"
+                        } else {
+                            profile.packageName
+                        }
+
+                        KeyValueTelemetryRow(label = "Akun", value = userLabel)
+                        KeyValueTelemetryRow(label = "Perangkat", value = "${profile.deviceName} (${profile.deviceId})", monospacedValue = true)
+                        KeyValueTelemetryRow(label = "Paket", value = pkgLabel, monospacedValue = true)
+                        KeyValueTelemetryRow(label = "Kuota Harian", value = quotaLabel, monospacedValue = true)
+                        KeyValueTelemetryRow(label = "Reset WIB", value = profile.resetCountdownWib, monospacedValue = true)
+                        KeyValueTelemetryRow(label = "Penyimpanan Token", value = "Android Keystore (AES-GCM)", monospacedValue = true)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onRefreshAuthSession,
+                                enabled = !auth.isBusy,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("auth_refresh_button")
+                            ) {
+                                Icon(imageVector = Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Refresh")
+                            }
+                            OutlinedButton(
+                                onClick = onLogoutDevice,
+                                enabled = !auth.isBusy,
+                                border = BorderStroke(1.dp, StatusDisconnected.copy(alpha = 0.6f)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("auth_logout_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Logout,
+                                    contentDescription = null,
+                                    tint = StatusDisconnected,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Logout", color = StatusDisconnected)
+                            }
+                        }
+                    } else if (auth.status == AuthSessionStatus.NETWORK_ERROR && auth.hasStoredCredentials) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = onRefreshAuthSession,
+                                enabled = !auth.isBusy,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("auth_retry_button")
+                            ) {
+                                Icon(imageVector = Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Coba Lagi")
+                            }
+                            OutlinedButton(
+                                onClick = onLogoutDevice,
+                                enabled = !auth.isBusy,
+                                border = BorderStroke(1.dp, StatusDisconnected.copy(alpha = 0.6f)),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("auth_logout_button")
+                            ) {
+                                Text("Logout", color = StatusDisconnected)
+                            }
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = pairingCode,
+                            onValueChange = { input ->
+                                pairingCode = input.filter { it.isDigit() }.take(6)
+                            },
+                            label = { Text("Kode Pairing 6 Digit (dari /android)") },
+                            placeholder = { Text("123456") },
+                            singleLine = true,
+                            enabled = !auth.isBusy,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("input_pairing_code")
+                        )
+
+                        OutlinedTextField(
+                            value = deviceName,
+                            onValueChange = { deviceName = it.take(64) },
+                            label = { Text("Nama Perangkat") },
+                            singleLine = true,
+                            enabled = !auth.isBusy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("input_device_name")
+                        )
+
+                        Button(
+                            onClick = {
+                                val codeToSend = pairingCode
+                                pairingCode = ""
+                                onPairDevice(effectiveBaseUrl, codeToSend, deviceName)
+                            },
+                            enabled = !auth.isBusy && pairingCode.length == 6,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("pair_device_button")
+                        ) {
+                            if (auth.isBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Icon(imageVector = Icons.Outlined.Link, contentDescription = null)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (auth.isBusy) "Menautkan..." else "Pair Device")
+                        }
+                    }
                 }
             }
 
@@ -507,8 +743,14 @@ fun DashboardScreen(
                         monospacedValue = true
                     )
                     KeyValueTelemetryRow(
-                        label = "Token Sesi (RAM)",
-                        value = LogSanitizer.maskTokenPreview(uiState.config.bearerToken),
+                        label = "Kredensial Perangkat",
+                        value = if (uiState.authSession.hasStoredCredentials) {
+                            "Tersimpan aman (Keystore)"
+                        } else if (uiState.config.bearerToken.isNotBlank()) {
+                            "Sesi RAM aktif (tersembunyi)"
+                        } else {
+                            "Belum ditautkan"
+                        },
                         monospacedValue = true
                     )
                 }

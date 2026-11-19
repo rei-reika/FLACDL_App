@@ -5,12 +5,14 @@ import com.example.core.security.LogSanitizer
 import com.example.core.security.UrlValidationResult
 import com.example.core.security.UrlValidator
 import com.example.data.model.ApiCallResult
+import com.example.data.model.AuthMeProfile
 import com.example.data.model.DiagnosticReportRequest
 import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffRequest
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
 import com.example.data.model.NetworkLatencySample
+import com.example.data.model.PairDeviceResponse
 import com.example.data.model.SearchRequest
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
@@ -59,6 +61,89 @@ class OkHttpFlacdlApiClient(
     private val handoffRequestAdapter = moshi.adapter(HandoffRequest::class.java)
     private val handoffResponseAdapter = moshi.adapter(HandoffResponse::class.java)
     private val reportAdapter = moshi.adapter(DiagnosticReportRequest::class.java)
+
+    override suspend fun pairDevice(
+        baseUrl: String,
+        pairingCode: String,
+        deviceName: String
+    ): ApiCallResult<PairDeviceResponse> {
+        val normalizedBase = when (val check = UrlValidator.validateVpsBaseUrl(baseUrl)) {
+            is UrlValidationResult.Invalid -> {
+                return ApiCallResult(
+                    isSuccess = false,
+                    errorCode = "invalid_base_url",
+                    errorMessage = check.reason
+                )
+            }
+            is UrlValidationResult.Valid -> check.normalizedBaseUrl
+        }
+
+        val cleanCode = pairingCode.trim()
+        if (!cleanCode.matches(Regex("^\\d{6}$"))) {
+            return ApiCallResult(
+                isSuccess = false,
+                errorCode = "validation_error",
+                errorMessage = "Kode pairing harus tepat 6 digit angka."
+            )
+        }
+
+        val cleanName = deviceName.trim().take(64).ifBlank { "Android Device" }
+        val jsonBody = JSONObject().apply {
+            put("pairing_code", cleanCode)
+            put("device_name", cleanName)
+        }.toString()
+
+        val url = "$normalizedBase/poc/v1/auth/pair"
+        val request = Request.Builder()
+            .url(url)
+            .post(jsonBody.toRequestBody(JSON_MEDIA_TYPE))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .build()
+
+        return executeTimedCall(request) { _, body, _ ->
+            parsePairResponse(body)
+        }
+    }
+
+    override suspend fun fetchAuthMe(config: TesterSessionConfig): ApiCallResult<AuthMeProfile> {
+        val apiConfig = when (val validation = ApiConfig.validateForLiveMode(config)) {
+            is ApiConfigValidation.Invalid -> {
+                return ApiCallResult(
+                    isSuccess = false,
+                    errorCode = validation.errorCode,
+                    errorMessage = validation.message
+                )
+            }
+            is ApiConfigValidation.Valid -> validation.config
+        }
+
+        val url = apiConfig.buildEndpointUrl(apiConfig.authMeEndpointPath)
+        val request = buildVpsGetRequest(url, apiConfig.bearerToken)
+        return executeTimedCall(request) { _, body, _ ->
+            parseAuthMeResponse(body)
+        }
+    }
+
+    override suspend fun logoutDevice(config: TesterSessionConfig): ApiCallResult<Boolean> {
+        val apiConfig = when (val validation = ApiConfig.validateForLiveMode(config)) {
+            is ApiConfigValidation.Invalid -> {
+                return ApiCallResult(
+                    isSuccess = false,
+                    errorCode = validation.errorCode,
+                    errorMessage = validation.message
+                )
+            }
+            is ApiConfigValidation.Valid -> validation.config
+        }
+
+        val url = apiConfig.buildEndpointUrl(apiConfig.authLogoutEndpointPath)
+        val request = buildVpsPostRequest(url, "{}", apiConfig.bearerToken)
+        return executeTimedCall(request) { _, body, _ ->
+            val obj = JSONObject(body)
+            obj.optBoolean("revoked", true)
+        }
+    }
 
     override suspend fun checkVpsHealth(config: TesterSessionConfig): ApiCallResult<HealthCheckInfo> {
         val apiConfig = when (val validation = ApiConfig.validateForLiveMode(config)) {
@@ -582,6 +667,84 @@ class OkHttpFlacdlApiClient(
                 query = query,
                 count = explicitCount ?: items.size,
                 results = items
+            )
+        }
+
+        /**
+         * Parse `POST /poc/v1/auth/pair` JSON response matching Phase 2B backend contract.
+         */
+        fun parsePairResponse(body: String): PairDeviceResponse {
+            val trimmed = body.trim()
+            if (!trimmed.startsWith("{")) {
+                throw IOException("Format respons pairing bukan objek JSON yang valid.")
+            }
+            val json = JSONObject(trimmed)
+            val accessToken = PocJsonParser.optNonBlankString(json, "access_token", "")
+            val deviceId = PocJsonParser.optNonBlankString(json, "device_id", "")
+            if (accessToken.isBlank() || deviceId.isBlank()) {
+                throw IOException("Respons pairing tidak menyertakan access_token atau device_id.")
+            }
+            return PairDeviceResponse(
+                deviceId = deviceId,
+                deviceName = PocJsonParser.optNonBlankString(json, "device_name", "Android Device"),
+                userId = json.optLong("user_id", 0L),
+                accessToken = accessToken,
+                tokenType = PocJsonParser.optNonBlankString(json, "token_type", "Bearer"),
+                pairedAtWib = PocJsonParser.optNonBlankString(json, "paired_at_wib", "-")
+            )
+        }
+
+        /**
+         * Parse `GET /poc/v1/auth/me` JSON response matching Phase 3A backend contract.
+         */
+        fun parseAuthMeResponse(body: String): AuthMeProfile {
+            val trimmed = body.trim()
+            if (!trimmed.startsWith("{")) {
+                throw IOException("Format respons /auth/me bukan objek JSON yang valid.")
+            }
+            val json = JSONObject(trimmed)
+            val dev = json.optJSONObject("device") ?: JSONObject()
+            val usr = json.optJSONObject("user") ?: JSONObject()
+            val pkg = json.optJSONObject("package") ?: JSONObject()
+            val quota = json.optJSONObject("quota") ?: JSONObject()
+            val settings = json.optJSONObject("settings") ?: JSONObject()
+
+            val dailyLimit = if (quota.has("daily_limit") && !quota.isNull("daily_limit")) {
+                quota.optInt("daily_limit")
+            } else {
+                null
+            }
+            val remainingQuota = if (quota.has("remaining_quota") && !quota.isNull("remaining_quota")) {
+                quota.optInt("remaining_quota")
+            } else {
+                null
+            }
+            val daysRemaining = if (pkg.has("days_remaining") && !pkg.isNull("days_remaining")) {
+                pkg.optInt("days_remaining")
+            } else {
+                null
+            }
+
+            return AuthMeProfile(
+                deviceId = PocJsonParser.optNonBlankString(dev, "device_id", "-"),
+                deviceName = PocJsonParser.optNonBlankString(dev, "device_name", "Android Device"),
+                pairedAtWib = PocJsonParser.optNonBlankString(dev, "paired_at_wib", "-"),
+                lastActiveAtWib = PocJsonParser.optNonBlankString(dev, "last_active_at_wib", "-"),
+                userId = usr.optLong("user_id", 0L),
+                username = PocJsonParser.optNonBlankString(usr, "username", ""),
+                fullName = PocJsonParser.optNonBlankString(usr, "full_name", "Pengguna FLACDL"),
+                isBlocked = usr.optBoolean("is_blocked", false),
+                packageId = PocJsonParser.optNonBlankString(pkg, "package_id", "gratis"),
+                packageName = PocJsonParser.optNonBlankString(pkg, "package_name", "Gratis"),
+                packageStatus = PocJsonParser.optNonBlankString(pkg, "status", "active"),
+                isUnlimited = pkg.optBoolean("is_unlimited", dailyLimit == null),
+                daysRemaining = daysRemaining,
+                dailyLimit = dailyLimit,
+                usedToday = quota.optInt("used_today", 0),
+                activeReserved = quota.optInt("active_reserved", 0),
+                remainingQuota = remainingQuota,
+                resetCountdownWib = PocJsonParser.optNonBlankString(quota, "reset_countdown_wib", "-"),
+                audioFormat = PocJsonParser.optNonBlankString(settings, "audio_format", "flac")
             )
         }
     }

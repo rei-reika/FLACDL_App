@@ -225,6 +225,11 @@ fun TesterAppRoot(
                             uiState = dashboardState,
                             onTestApiConnection = { dashboardViewModel.testApiConnection() },
                             onRunNetworkDiagnostics = { dashboardViewModel.runNetworkDiagnostics() },
+                            onPairDevice = { baseUrl, code, deviceName ->
+                                dashboardViewModel.pairDevice(baseUrl, code, deviceName)
+                            },
+                            onRefreshAuthSession = { dashboardViewModel.refreshAuthSession() },
+                            onLogoutDevice = { dashboardViewModel.logoutDevice() },
                             onStartNewTest = {
                                 dashboardViewModel.startNewTest()
                                 workerMonitorViewModel.resetHistory()

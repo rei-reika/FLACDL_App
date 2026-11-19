@@ -3,8 +3,14 @@ package com.example.data.repository
 import com.example.core.config.SessionConfigRepository
 import com.example.core.config.TestMode
 import com.example.core.config.TesterSessionConfig
+import com.example.core.security.DeviceCredentialStore
+import com.example.core.security.InMemoryDeviceCredentialStore
 import com.example.core.security.LogSanitizer
+import com.example.core.security.StoredDeviceSession
 import com.example.data.model.ApiCallResult
+import com.example.data.model.AuthMeProfile
+import com.example.data.model.AuthSessionState
+import com.example.data.model.AuthSessionStatus
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.DashboardMetrics
 import com.example.data.model.DiagnosticReportRequest
@@ -13,6 +19,7 @@ import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
 import com.example.data.model.NetworkDiagnosticsReport
 import com.example.data.model.NetworkLatencySample
+import com.example.data.model.PairDeviceResponse
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
 import com.example.data.model.WorkerJobStatus
@@ -28,12 +35,13 @@ import kotlinx.coroutines.flow.update
 /**
  * Central repository (`TesterRepository` / `ApiRepository`) bridging Control Plane (VPS)
  * and Data Plane (Lucida Worker) across Demo Mode and Live Mode.
- * Sensitive tokens and download URLs are never persisted to disk.
+ * Device bearer tokens are stored exclusively via [DeviceCredentialStore] (Android Keystore AES-GCM).
  */
 class TesterRepository(
     val configRepository: SessionConfigRepository,
     private val liveClient: FlacdlApiClient = OkHttpFlacdlApiClient(),
-    private val demoClient: FlacdlApiClient = DemoFlacdlApiClient()
+    private val demoClient: FlacdlApiClient = DemoFlacdlApiClient(),
+    private val credentialStore: DeviceCredentialStore = InMemoryDeviceCredentialStore()
 ) {
     private val _dashboardMetrics = MutableStateFlow(DashboardMetrics())
     val dashboardMetrics: StateFlow<DashboardMetrics> = _dashboardMetrics.asStateFlow()
@@ -53,11 +61,218 @@ class TesterRepository(
     private val _networkDiagnostics = MutableStateFlow(NetworkDiagnosticsReport())
     val networkDiagnostics: StateFlow<NetworkDiagnosticsReport> = _networkDiagnostics.asStateFlow()
 
+    private val _authSession = MutableStateFlow(AuthSessionState())
+    val authSession: StateFlow<AuthSessionState> = _authSession.asStateFlow()
+
     private fun activeClient(config: TesterSessionConfig): FlacdlApiClient {
         return when (config.mode) {
             TestMode.DEMO -> demoClient
             TestMode.LIVE -> liveClient
         }
+    }
+
+    /**
+     * Restore encrypted device session from Android Keystore on app startup and validate via `GET /poc/v1/auth/me`.
+     * Network failures NEVER delete stored credentials; only HTTP 401 (revoked/invalid) clears local credentials.
+     */
+    suspend fun restoreSavedSession(): AuthSessionState {
+        val stored = credentialStore.loadSession()
+        if (stored == null) {
+            val unauth = AuthSessionState(
+                status = AuthSessionStatus.UNAUTHENTICATED,
+                hasStoredCredentials = false,
+                isBusy = false,
+                profile = null,
+                statusMessage = "Belum ditautkan. Buat kode 6 digit melalui /android di Telegram Bot.",
+                errorMessage = null
+            )
+            _authSession.value = unauth
+            return unauth
+        }
+
+        configRepository.apply {
+            setMode(TestMode.LIVE)
+            updateVpsBaseUrl(stored.baseUrl)
+            updateSessionToken(stored.bearerToken)
+        }
+        _authSession.value = AuthSessionState(
+            status = AuthSessionStatus.RESTORING,
+            hasStoredCredentials = true,
+            isBusy = true,
+            statusMessage = "Memulihkan sesi perangkat (${stored.deviceName.ifBlank { stored.deviceId }})..."
+        )
+        return refreshAuthSession()
+    }
+
+    /**
+     * Pair Android device using a 6-digit Telegram `/android` code via `POST /poc/v1/auth/pair`.
+     * Stores the resulting 256-bit Bearer token in Android Keystore-backed storage and fetches `/auth/me`.
+     */
+    suspend fun pairWithTelegramCode(
+        baseUrl: String,
+        pairingCode: String,
+        deviceName: String
+    ): ApiCallResult<PairDeviceResponse> {
+        val targetBaseUrl = baseUrl.trim().ifBlank { DEFAULT_PRODUCTION_BASE_URL }
+        _authSession.update {
+            it.copy(
+                status = AuthSessionStatus.PAIRING,
+                isBusy = true,
+                errorMessage = null,
+                statusMessage = "Menautkan perangkat ke ${LogSanitizer.maskUrlForDisplay(targetBaseUrl)}..."
+            )
+        }
+
+        val pairResult = liveClient.pairDevice(
+            baseUrl = targetBaseUrl,
+            pairingCode = pairingCode,
+            deviceName = deviceName
+        )
+        if (!pairResult.isSuccess || pairResult.data == null) {
+            val existingStored = credentialStore.loadSession() != null
+            val errMsg = pairResult.errorMessage ?: "Pairing gagal."
+            _authSession.update { prev ->
+                prev.copy(
+                    status = if (existingStored && prev.profile != null) {
+                        AuthSessionStatus.AUTHENTICATED
+                    } else {
+                        AuthSessionStatus.UNAUTHENTICATED
+                    },
+                    hasStoredCredentials = existingStored,
+                    isBusy = false,
+                    statusMessage = "Pairing gagal.",
+                    errorMessage = LogSanitizer.redactSensitive(errMsg)
+                )
+            }
+            return pairResult
+        }
+
+        val paired = pairResult.data
+        val cleanBase = targetBaseUrl.trimEnd('/')
+        credentialStore.saveSession(
+            StoredDeviceSession(
+                baseUrl = cleanBase,
+                bearerToken = paired.accessToken,
+                deviceId = paired.deviceId,
+                deviceName = paired.deviceName
+            )
+        )
+        configRepository.apply {
+            setMode(TestMode.LIVE)
+            updateVpsBaseUrl(cleanBase)
+            updateSessionToken(paired.accessToken)
+        }
+
+        // Validate immediately against GET /poc/v1/auth/me to load user, package, and quota profile
+        refreshAuthSession()
+        return pairResult
+    }
+
+    /**
+     * Validate current session against `GET /poc/v1/auth/me`.
+     * - HTTP 200 -> AUTHENTICATED with full profile.
+     * - HTTP 401 -> REVOKED_OR_INVALID and clears stored credentials.
+     * - Network / 5xx error -> NETWORK_ERROR while PRESERVING stored valid credentials!
+     */
+    suspend fun refreshAuthSession(): AuthSessionState {
+        val cfg = configRepository.config.value
+        val hasStored = credentialStore.loadSession() != null
+        if (cfg.bearerToken.isBlank()) {
+            val unauth = AuthSessionState(
+                status = AuthSessionStatus.UNAUTHENTICATED,
+                hasStoredCredentials = hasStored,
+                isBusy = false,
+                statusMessage = "Belum ditautkan. Buat kode 6 digit melalui /android di Telegram Bot."
+            )
+            _authSession.value = unauth
+            return unauth
+        }
+
+        _authSession.update { it.copy(isBusy = true, errorMessage = null) }
+        val result = liveClient.fetchAuthMe(cfg)
+        if (result.isSuccess && result.data != null) {
+            val profile = result.data
+            val authenticatedState = AuthSessionState(
+                status = AuthSessionStatus.AUTHENTICATED,
+                hasStoredCredentials = credentialStore.loadSession() != null,
+                isBusy = false,
+                profile = profile,
+                statusMessage = if (profile.isBlocked) {
+                    "Sesi terautentikasi, tetapi akun Telegram diblokir."
+                } else {
+                    "Perangkat terhubung (${profile.deviceName})."
+                },
+                errorMessage = null,
+                isSimulated = result.isSimulated
+            )
+            _authSession.value = authenticatedState
+            return authenticatedState
+        }
+
+        // HTTP 401: token is invalid, expired, or revoked on server -> clear local credentials!
+        if (result.httpStatusCode == 401) {
+            credentialStore.clearSession()
+            configRepository.clearSessionToken()
+            val revokedState = AuthSessionState(
+                status = AuthSessionStatus.REVOKED_OR_INVALID,
+                hasStoredCredentials = false,
+                isBusy = false,
+                profile = null,
+                statusMessage = "Sesi tidak valid atau telah dicabut. Silakan pairing ulang.",
+                errorMessage = LogSanitizer.redactSensitive(
+                    result.errorMessage ?: "Token perangkat dicabut atau tidak valid (HTTP 401)."
+                )
+            )
+            _authSession.value = revokedState
+            return revokedState
+        }
+
+        // Network error or 5xx/other transient failure -> KEEP stored valid token intact!
+        val preservedState = _authSession.value.copy(
+            status = AuthSessionStatus.NETWORK_ERROR,
+            hasStoredCredentials = credentialStore.loadSession() != null,
+            isBusy = false,
+            statusMessage = "Tidak dapat memverifikasi sesi (kendala jaringan). Kredensial lokal tetap dipertahankan.",
+            errorMessage = LogSanitizer.redactSensitive(
+                result.errorMessage ?: "Koneksi ke server gagal."
+            )
+        )
+        _authSession.value = preservedState
+        return preservedState
+    }
+
+    /**
+     * Logout current device: revokes token on server (`POST /poc/v1/auth/logout`) and
+     * unconditionally clears encrypted local credentials from Android Keystore.
+     */
+    suspend fun logoutCurrentDevice(): AuthSessionState {
+        val cfg = configRepository.config.value
+        _authSession.update { it.copy(isBusy = true, errorMessage = null, statusMessage = "Memutuskan sesi perangkat...") }
+
+        if (cfg.bearerToken.isNotBlank() && cfg.vpsBaseUrl.isNotBlank()) {
+            try {
+                liveClient.logoutDevice(cfg)
+            } catch (_: Exception) {
+                // Local logout still proceeds even if server is unreachable
+            }
+        }
+
+        credentialStore.clearSession()
+        configRepository.clearSessionToken()
+        val loggedOut = AuthSessionState(
+            status = AuthSessionStatus.UNAUTHENTICATED,
+            hasStoredCredentials = false,
+            isBusy = false,
+            profile = null,
+            statusMessage = "Perangkat telah logout dan kredensial lokal dihapus.",
+            errorMessage = null
+        )
+        _authSession.value = loggedOut
+        return loggedOut
+    }
+
+    companion object {
+        const val DEFAULT_PRODUCTION_BASE_URL = "https://api.auditify.web.id"
     }
 
     suspend fun testApiConnection(): ApiCallResult<HealthCheckInfo> {

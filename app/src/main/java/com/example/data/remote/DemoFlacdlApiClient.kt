@@ -2,11 +2,13 @@ package com.example.data.remote
 
 import com.example.core.config.TesterSessionConfig
 import com.example.data.model.ApiCallResult
+import com.example.data.model.AuthMeProfile
 import com.example.data.model.DiagnosticReportRequest
 import com.example.data.model.EndpointDiagnosticsSummary
 import com.example.data.model.HandoffResponse
 import com.example.data.model.HealthCheckInfo
 import com.example.data.model.NetworkLatencySample
+import com.example.data.model.PairDeviceResponse
 import com.example.data.model.SearchResponse
 import com.example.data.model.SearchTrackItem
 import com.example.data.model.WorkerJobStatus
@@ -67,6 +69,98 @@ class DemoFlacdlApiClient : FlacdlApiClient {
             trackUrl = "https://music.amazon.com/tracks/B08DEMO005"
         )
     )
+
+    override suspend fun pairDevice(
+        baseUrl: String,
+        pairingCode: String,
+        deviceName: String
+    ): ApiCallResult<PairDeviceResponse> {
+        delay(200)
+        val cleanCode = pairingCode.trim()
+        if (!cleanCode.matches(Regex("^\\d{6}$"))) {
+            return ApiCallResult(
+                isSuccess = false,
+                httpStatusCode = 400,
+                errorCode = "validation_error",
+                errorMessage = "Kode pairing harus tepat 6 digit angka.",
+                isSimulated = true
+            )
+        }
+        if (cleanCode == "000000") {
+            return ApiCallResult(
+                isSuccess = false,
+                httpStatusCode = 401,
+                errorCode = "invalid_pairing_code",
+                errorMessage = "Kode pairing tidak valid, sudah digunakan, atau telah kedaluwarsa (Simulasi).",
+                isSimulated = true
+            )
+        }
+        return ApiCallResult(
+            isSuccess = true,
+            data = PairDeviceResponse(
+                deviceId = "DEV-DEMO0001",
+                deviceName = deviceName.trim().ifBlank { "Android Demo Device" },
+                userId = 100001L,
+                accessToken = "demo_local_simulated_token_only",
+                tokenType = "Bearer",
+                pairedAtWib = "2026-11-19 18:00:00 WIB"
+            ),
+            httpStatusCode = 200,
+            latencyMs = 35L,
+            isSimulated = true
+        )
+    }
+
+    override suspend fun fetchAuthMe(config: TesterSessionConfig): ApiCallResult<AuthMeProfile> {
+        delay(160)
+        if (config.bearerToken.isBlank()) {
+            return ApiCallResult(
+                isSuccess = false,
+                httpStatusCode = 401,
+                errorCode = "unauthorized",
+                errorMessage = "Belum ada token sesi (Simulasi Demo).",
+                isSimulated = true
+            )
+        }
+        return ApiCallResult(
+            isSuccess = true,
+            data = AuthMeProfile(
+                deviceId = "DEV-DEMO0001",
+                deviceName = "Android Demo Device",
+                pairedAtWib = "2026-11-19 18:00:00 WIB",
+                lastActiveAtWib = "2026-11-19 18:05:00 WIB",
+                userId = 100001L,
+                username = "demo_user",
+                fullName = "FLACDL Demo User",
+                isBlocked = false,
+                packageId = "gratis",
+                packageName = "Gratis",
+                packageStatus = "active",
+                isUnlimited = false,
+                daysRemaining = null,
+                dailyLimit = 10,
+                usedToday = 2,
+                activeReserved = 0,
+                remainingQuota = 8,
+                resetCountdownWib = "5j 55m",
+                audioFormat = "flac"
+            ),
+            httpStatusCode = 200,
+            latencyMs = 28L,
+            isSimulated = true
+        )
+    }
+
+    override suspend fun logoutDevice(config: TesterSessionConfig): ApiCallResult<Boolean> {
+        delay(120)
+        return ApiCallResult(
+            isSuccess = true,
+            data = true,
+            httpStatusCode = 200,
+            latencyMs = 20L,
+            isSimulated = true
+        )
+    }
 
     override suspend fun checkVpsHealth(config: TesterSessionConfig): ApiCallResult<HealthCheckInfo> {
         delay(220)
