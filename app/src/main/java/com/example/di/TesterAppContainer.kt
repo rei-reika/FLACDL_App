@@ -3,8 +3,13 @@ package com.example.di
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import com.example.catalog.db.LocalCatalogDatabase
+import com.example.catalog.remote.OkHttpItunesCatalogClient
+import com.example.catalog.remote.OkHttpMusicBrainzCatalogClient
+import com.example.catalog.repository.LocalCatalogRepository
 import com.example.core.config.SessionConfigRepository
 import com.example.core.security.AndroidKeystoreTokenStore
+import com.example.data.remote.OkHttpFlacdlApiClient
 import com.example.data.repository.TesterRepository
 import com.example.domain.CreateHandoffUseCase
 import com.example.domain.PollWorkerStatusUseCase
@@ -27,6 +32,20 @@ class TesterAppContainer(appContext: Context) {
         credentialStore = secureTokenStore
     )
     val directDownloadManager = DirectDownloadManager(context = appContext.applicationContext)
+
+    // Independent Local Catalog Engine (Phase 2A) — lazy-initialized, shares OkHttp client conventions
+    val localCatalogDatabase: LocalCatalogDatabase by lazy {
+        LocalCatalogDatabase.create(appContext.applicationContext)
+    }
+
+    val localCatalogRepository: LocalCatalogRepository by lazy {
+        val sharedHttpClient = OkHttpFlacdlApiClient.defaultOkHttpClient()
+        LocalCatalogRepository(
+            database = localCatalogDatabase,
+            itunesProvider = OkHttpItunesCatalogClient(client = sharedHttpClient),
+            musicBrainzProvider = OkHttpMusicBrainzCatalogClient(client = sharedHttpClient)
+        )
+    }
 
     private val testApiConnectionUseCase = TestApiConnectionUseCase(testerRepository)
     private val searchTracksUseCase = SearchTracksUseCase(testerRepository)
