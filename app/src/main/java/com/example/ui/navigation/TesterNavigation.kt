@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -71,6 +72,8 @@ import com.example.ui.handoff.HandoffScreen
 import com.example.ui.handoff.HandoffViewModel
 import com.example.ui.search.SearchScreen
 import com.example.ui.search.SearchViewModel
+import com.example.ui.settings.OpenSubsonicSettingsScreen
+import com.example.ui.settings.OpenSubsonicSettingsViewModel
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.HairlineBorder
 import com.example.ui.worker.WorkerMonitorScreen
@@ -85,6 +88,7 @@ object TesterRoutes {
     const val ROUTE_CATALOG = "catalog"
     const val ROUTE_CATALOG_ARTIST = "catalog/artist/{artistId}"
     const val ROUTE_CATALOG_ALBUM = "catalog/album/{albumId}"
+    const val ROUTE_OPENSUBSONIC_SETTINGS = "settings/opensubsonic"
 
     fun artistDetailRoute(artistId: Long): String = "catalog/artist/$artistId"
     fun albumDetailRoute(albumId: Long): String = "catalog/album/$albumId"
@@ -144,10 +148,12 @@ fun TesterAppRoot(
     val workerMonitorViewModel: WorkerMonitorViewModel = viewModel(factory = container.viewModelFactory)
     val directDownloadViewModel: DirectDownloadViewModel = viewModel(factory = container.viewModelFactory)
     val catalogViewModel: CatalogViewModel = viewModel(factory = container.viewModelFactory)
+    val openSubsonicSettingsViewModel: OpenSubsonicSettingsViewModel = viewModel(factory = container.viewModelFactory)
 
     val dashboardState by dashboardViewModel.uiState.collectAsStateWithLifecycle()
     var showConfigSheet by remember { mutableStateOf(false) }
     val isCatalogRoute = currentRoute.startsWith(TesterRoutes.ROUTE_CATALOG)
+    val isServerSettingsRoute = currentRoute == TesterRoutes.ROUTE_OPENSUBSONIC_SETTINGS
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val useNavigationRail = maxWidth >= 600.dp
@@ -165,6 +171,17 @@ fun TesterAppRoot(
                             )
                         },
                         actions = {
+                            IconButton(
+                                onClick = { navigateSingleTop(navController, TesterRoutes.ROUTE_OPENSUBSONIC_SETTINGS) },
+                                modifier = Modifier.testTag("open_opensubsonic_settings_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Dns,
+                                    contentDescription = "Pengaturan Server OpenSubsonic",
+                                    tint = if (isServerSettingsRoute) CyanAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                             OutlinedButton(
                                 onClick = { navigateSingleTop(navController, TesterRoutes.ROUTE_CATALOG) },
                                 border = BorderStroke(
@@ -419,7 +436,40 @@ fun TesterAppRoot(
                             onLoadMoreTracks = { catalogViewModel.loadMoreAlbumTracks() },
                             onRetry = {
                                 if (albumId > 0L) catalogViewModel.loadAlbumDetail(albumId)
+                            },
+                            onCheckSourceAvailability = { catalogViewModel.checkAlbumSourceAvailability() },
+                            onOpenServerSettings = {
+                                navigateSingleTop(navController, TesterRoutes.ROUTE_OPENSUBSONIC_SETTINGS)
                             }
+                        )
+                    }
+
+                    composable(TesterRoutes.ROUTE_OPENSUBSONIC_SETTINGS) {
+                        val settingsState by openSubsonicSettingsViewModel.uiState.collectAsStateWithLifecycle()
+                        OpenSubsonicSettingsScreen(
+                            uiState = settingsState,
+                            onBack = {
+                                catalogViewModel.refreshAlbumSourceAvailabilityFlag()
+                                navController.popBackStack()
+                            },
+                            onAddServerClick = { openSubsonicSettingsViewModel.openAddServerForm() },
+                            onEditServerClick = { openSubsonicSettingsViewModel.openEditServerForm(it) },
+                            onDeleteServerClick = { openSubsonicSettingsViewModel.requestDeleteServer(it) },
+                            onConfirmDelete = { openSubsonicSettingsViewModel.confirmDeleteServer() },
+                            onCancelDelete = { openSubsonicSettingsViewModel.cancelDeleteServer() },
+                            onToggleEnabled = { id, enabled ->
+                                openSubsonicSettingsViewModel.toggleServerEnabled(id, enabled)
+                            },
+                            onTestServerConnection = { openSubsonicSettingsViewModel.testServerConnection(it) },
+                            onDismissForm = { openSubsonicSettingsViewModel.dismissForm() },
+                            onFormNameChanged = { openSubsonicSettingsViewModel.onFormNameChanged(it) },
+                            onFormUrlChanged = { openSubsonicSettingsViewModel.onFormUrlChanged(it) },
+                            onFormUsernameChanged = { openSubsonicSettingsViewModel.onFormUsernameChanged(it) },
+                            onFormAuthTypeChanged = { openSubsonicSettingsViewModel.onFormAuthTypeChanged(it) },
+                            onFormCredentialChanged = { openSubsonicSettingsViewModel.onFormCredentialChanged(it) },
+                            onFormEnabledChanged = { openSubsonicSettingsViewModel.onFormEnabledChanged(it) },
+                            onTestFormConnection = { openSubsonicSettingsViewModel.testFormConnection() },
+                            onSaveForm = { openSubsonicSettingsViewModel.saveForm() }
                         )
                     }
                 }

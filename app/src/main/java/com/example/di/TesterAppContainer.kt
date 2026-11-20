@@ -29,6 +29,7 @@ import com.example.ui.dashboard.DashboardViewModel
 import com.example.ui.download.DirectDownloadViewModel
 import com.example.ui.handoff.HandoffViewModel
 import com.example.ui.search.SearchViewModel
+import com.example.ui.settings.OpenSubsonicSettingsViewModel
 import com.example.ui.worker.WorkerMonitorViewModel
 
 class TesterAppContainer(appContext: Context) {
@@ -103,7 +104,15 @@ class TesterAppContainer(appContext: Context) {
                         sendDiagnosticReportUseCase
                     ) as T
                 modelClass.isAssignableFrom(CatalogViewModel::class.java) ->
-                    CatalogViewModel(localCatalogRepository) as T
+                    CatalogViewModel(
+                        repository = localCatalogRepository,
+                        downloadSourceResolver = downloadSourceResolver
+                    ) as T
+                modelClass.isAssignableFrom(OpenSubsonicSettingsViewModel::class.java) ->
+                    OpenSubsonicSettingsViewModel(
+                        configRepository = openSubsonicConfigRepository,
+                        connectionValidator = openSubsonicConnectionValidator
+                    ) as T
                 else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }
         }

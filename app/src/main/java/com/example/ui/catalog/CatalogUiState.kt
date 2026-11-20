@@ -91,6 +91,16 @@ data class ArtistDetailUiState(
     val errorMessage: String? = null
 )
 
+sealed class TrackResolutionStatusUi {
+    data object Idle : TrackResolutionStatusUi()
+    data object Checking : TrackResolutionStatusUi()
+    data class Available(val qualityHint: String? = null) : TrackResolutionStatusUi()
+    data class Ambiguous(val candidateCount: Int) : TrackResolutionStatusUi()
+    data class Unverified(val reason: String) : TrackResolutionStatusUi()
+    data class Unavailable(val reason: String) : TrackResolutionStatusUi()
+    data class Error(val message: String) : TrackResolutionStatusUi()
+}
+
 data class AlbumDetailUiState(
     val albumId: Long? = null,
     val isLoading: Boolean = false,
@@ -101,7 +111,11 @@ data class AlbumDetailUiState(
     val totalTracks: Int = 0,
     val hasMoreTracks: Boolean = false,
     val syncNotice: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val hasConfiguredSource: Boolean = false,
+    val isResolvingSources: Boolean = false,
+    val trackResolutions: Map<Long, TrackResolutionStatusUi> = emptyMap(),
+    val resolutionSummary: String? = null
 )
 
 internal object CatalogFormatters {
