@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.example.catalog.db.LocalCatalogDatabase
+import com.example.catalog.provider.ItunesCatalogAdapter
 import com.example.catalog.remote.OkHttpItunesCatalogClient
 import com.example.catalog.remote.OkHttpMusicBrainzCatalogClient
 import com.example.catalog.repository.LocalCatalogRepository
@@ -43,7 +44,7 @@ class TesterAppContainer(appContext: Context) {
         val sharedHttpClient = OkHttpFlacdlApiClient.defaultOkHttpClient()
         LocalCatalogRepository(
             database = localCatalogDatabase,
-            itunesProvider = OkHttpItunesCatalogClient(client = sharedHttpClient),
+            catalogProvider = ItunesCatalogAdapter(OkHttpItunesCatalogClient(client = sharedHttpClient)),
             musicBrainzProvider = OkHttpMusicBrainzCatalogClient(client = sharedHttpClient)
         )
     }

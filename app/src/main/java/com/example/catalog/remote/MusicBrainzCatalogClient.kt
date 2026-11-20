@@ -1,5 +1,6 @@
 package com.example.catalog.remote
 
+import com.example.catalog.enrichment.MusicBrainzRecordingCandidate
 import com.example.catalog.model.MusicBrainzArtistEnrichment
 import com.example.catalog.model.MusicBrainzRecordingEnrichment
 import com.example.catalog.model.MusicBrainzReleaseGroupEnrichment
@@ -12,6 +13,11 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.IOException
 
+class MusicBrainzRateLimitException(
+    message: String,
+    val httpCode: Int
+) : IOException(message)
+
 interface MusicBrainzEnrichmentProvider {
     suspend fun findArtistEnrichment(artistName: String): MusicBrainzArtistEnrichment?
     suspend fun findReleaseGroupEnrichment(
@@ -23,6 +29,33 @@ interface MusicBrainzEnrichmentProvider {
         artistName: String,
         trackTitle: String
     ): MusicBrainzRecordingEnrichment?
+
+    /**
+     * Searches MusicBrainz recording candidates for TrackMatcher verification.
+     * Defaults to wrapping [findRecordingEnrichment] for backward compatibility with existing fakes.
+     */
+    suspend fun searchRecordingCandidates(
+        artistName: String,
+        trackTitle: String,
+        limit: Int = 5
+    ): List<MusicBrainzRecordingCandidate> {
+        val single = findRecordingEnrichment(artistName, trackTitle) ?: return emptyList()
+        return listOf(
+            MusicBrainzRecordingCandidate(
+                musicBrainzRecordingId = single.musicBrainzRecordingId,
+                title = trackTitle,
+                artistName = artistName,
+                durationMs = single.durationMs,
+                isrcs = listOfNotNull(single.isrc)
+            )
+        )
+    }
+
+    /**
+     * Performs `/ws/2/recording/{mbid}?inc=isrcs&fmt=json` detail lookup when a verified
+     * recording search result did not include ISRC data.
+     */
+    suspend fun fetchRecordingIsrcs(recordingMbid: String): List<String> = emptyList()
 }
 
 /**
@@ -94,6 +127,36 @@ class OkHttpMusicBrainzCatalogClient(
         return parseRecordingEnrichment(body)
     }
 
+    override suspend fun searchRecordingCandidates(
+        artistName: String,
+        trackTitle: String,
+        limit: Int
+    ): List<MusicBrainzRecordingCandidate> {
+        val cleanTrack = trackTitle.trim()
+        val cleanArtist = artistName.trim()
+        if (cleanTrack.isEmpty() || cleanArtist.isEmpty()) return emptyList()
+        val safeLimit = limit.coerceIn(1, 10)
+        val query = """recording:"$cleanTrack" AND artist:"$cleanArtist""""
+        val url = "$BASE_URL/recording".toHttpUrl().newBuilder()
+            .addQueryParameter("query", query)
+            .addQueryParameter("limit", safeLimit.toString())
+            .addQueryParameter("fmt", "json")
+            .build()
+        val body = executeWithBackoff(url.toString())
+        return parseRecordingCandidates(body)
+    }
+
+    override suspend fun fetchRecordingIsrcs(recordingMbid: String): List<String> {
+        val cleanMbid = recordingMbid.trim()
+        if (cleanMbid.isEmpty()) return emptyList()
+        val url = "$BASE_URL/recording/$cleanMbid".toHttpUrl().newBuilder()
+            .addQueryParameter("inc", "isrcs")
+            .addQueryParameter("fmt", "json")
+            .build()
+        val body = executeWithBackoff(url.toString())
+        return parseRecordingDetailIsrcs(body)
+    }
+
     private suspend fun executeWithBackoff(url: String): String = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
         val attempts = maxRetries.coerceAtLeast(1)
@@ -115,6 +178,12 @@ class OkHttpMusicBrainzCatalogClient(
                         val backoffMs = baseBackoffMs * (1L shl attempt)
                         delayFn(backoffMs)
                         return@use
+                    }
+                    if (response.code == 429 || response.code == 503) {
+                        throw MusicBrainzRateLimitException(
+                            message = "MusicBrainz API rate-limited (HTTP ${response.code}).",
+                            httpCode = response.code
+                        )
                     }
                     throw IOException("MusicBrainz API returned HTTP ${response.code}.")
                 }
@@ -188,6 +257,86 @@ class OkHttpMusicBrainzCatalogClient(
                 durationMs = lengthMs,
                 isrc = isrc
             )
+        }
+
+        fun parseRecordingCandidates(rawJson: String): List<MusicBrainzRecordingCandidate> {
+            val arr = JSONObject(rawJson).optJSONArray("recordings") ?: return emptyList()
+            val out = mutableListOf<MusicBrainzRecordingCandidate>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val recid = obj.optString("id", "").trim()
+                val title = obj.optString("title", "").trim()
+                if (recid.isEmpty() || title.isEmpty()) continue
+
+                val artistName = extractArtistCredit(obj)
+                if (artistName.isEmpty()) continue
+
+                val lengthMs = if (obj.has("length") && !obj.isNull("length")) {
+                    obj.optLong("length", -1L).takeIf { it > 0L }
+                } else {
+                    null
+                }
+
+                val releases = obj.optJSONArray("releases")
+                val firstRelease = if (releases != null && releases.length() > 0) releases.optJSONObject(0) else null
+                val albumTitle = firstRelease?.optString("title", "")?.trim()?.takeIf { it.isNotEmpty() }
+                val releaseDate = firstRelease?.optString("date", "")?.trim()
+                val releaseYear = extractYear(releaseDate)
+
+                val isrcs = extractIsrcList(obj)
+
+                out.add(
+                    MusicBrainzRecordingCandidate(
+                        musicBrainzRecordingId = recid,
+                        title = title,
+                        artistName = artistName,
+                        albumTitle = albumTitle,
+                        durationMs = lengthMs,
+                        releaseYear = releaseYear,
+                        isrcs = isrcs
+                    )
+                )
+            }
+            return out
+        }
+
+        fun parseRecordingDetailIsrcs(rawJson: String): List<String> {
+            val root = JSONObject(rawJson)
+            return extractIsrcList(root)
+        }
+
+        private fun extractArtistCredit(obj: JSONObject): String {
+            val credits = obj.optJSONArray("artist-credit") ?: return ""
+            val sb = StringBuilder()
+            for (i in 0 until credits.length()) {
+                val item = credits.optJSONObject(i) ?: continue
+                val name = item.optString("name", "").trim()
+                    .ifEmpty { item.optJSONObject("artist")?.optString("name", "")?.trim().orEmpty() }
+                if (name.isEmpty()) continue
+                sb.append(name)
+                val joinPhrase = item.optString("joinphrase", "")
+                if (joinPhrase.isNotEmpty()) {
+                    sb.append(joinPhrase)
+                } else if (i < credits.length() - 1) {
+                    sb.append(", ")
+                }
+            }
+            return sb.toString().trim()
+        }
+
+        private fun extractIsrcList(obj: JSONObject): List<String> {
+            val arr = obj.optJSONArray("isrcs") ?: return emptyList()
+            val out = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val raw = arr.optString(i, "").trim()
+                if (raw.isNotEmpty()) out.add(raw)
+            }
+            return out
+        }
+
+        private fun extractYear(rawDate: String?): Int? {
+            if (rawDate.isNullOrBlank() || rawDate.length < 4) return null
+            return rawDate.substring(0, 4).toIntOrNull()
         }
     }
 }
