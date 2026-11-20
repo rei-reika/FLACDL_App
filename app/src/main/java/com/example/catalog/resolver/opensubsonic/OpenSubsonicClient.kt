@@ -20,6 +20,12 @@ import java.util.concurrent.TimeUnit
  */
 interface OpenSubsonicClient {
     suspend fun searchSongs(query: String, songCount: Int): List<OpenSubsonicSongDto>
+
+    /**
+     * Validates server reachability and credentials using documented `rest/ping.view`.
+     * Never initiates audio downloads.
+     */
+    suspend fun ping(): OpenSubsonicPingResponse = OpenSubsonicPingResponse()
 }
 
 /**
@@ -54,72 +60,100 @@ class OkHttpOpenSubsonicClient(
             }
 
             val url = buildSearch3Url(config, cleanQuery, songCount.coerceIn(1, config.maxCandidates.coerceAtLeast(1)))
-            val request = Request.Builder()
-                .url(url)
-                .get()
-                .header("Accept", "application/json")
-                .build()
-
-            try {
-                httpClient.newCall(request).execute().use { response ->
-                    val body = response.body?.string().orEmpty()
-                    when {
-                        response.isRedirect -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.INVALID_REQUEST,
-                            message = "OpenSubsonic server returned a redirect (HTTP ${response.code}); redirects are disabled to prevent credential leakage."
-                        )
-
-                        response.code == 401 || response.code == 403 -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.AUTHENTICATION,
-                            message = "OpenSubsonic server rejected authentication (HTTP ${response.code})."
-                        )
-
-                        response.code == 429 -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.RATE_LIMITED,
-                            message = "OpenSubsonic server rate-limited request (HTTP 429)."
-                        )
-
-                        response.code >= 500 -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.UPSTREAM_UNAVAILABLE,
-                            message = "OpenSubsonic server error (HTTP ${response.code})."
-                        )
-
-                        !response.isSuccessful -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.INVALID_REQUEST,
-                            message = "OpenSubsonic server returned HTTP ${response.code}."
-                        )
-
-                        body.isBlank() -> throw DownloadSourceLookupException(
-                            errorType = ResolverErrorType.UNKNOWN,
-                            message = "OpenSubsonic server returned an empty response."
-                        )
-
-                        else -> parseSearch3Response(body)
-                    }
-                }
-            } catch (e: DownloadSourceLookupException) {
-                throw e
-            } catch (e: SocketTimeoutException) {
-                throw DownloadSourceLookupException(
-                    errorType = ResolverErrorType.TIMEOUT,
-                    message = "OpenSubsonic search timed out after ${config.timeoutMs}ms.",
-                    cause = e
-                )
-            } catch (e: IOException) {
-                throw DownloadSourceLookupException(
-                    errorType = ResolverErrorType.NETWORK,
-                    message = "Network error communicating with OpenSubsonic server.",
-                    cause = e
-                )
-            }
+            val body = executeValidatedGet(url)
+            parseSearch3Response(body)
         }
 
+    override suspend fun ping(): OpenSubsonicPingResponse =
+        withContext(Dispatchers.IO) {
+            val url = buildPingUrl(config)
+            val body = executeValidatedGet(url)
+            parsePingResponse(body)
+        }
+
+    private fun executeValidatedGet(url: HttpUrl): String {
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("Accept", "application/json")
+            .build()
+
+        return try {
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                when {
+                    response.isRedirect -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.INVALID_REQUEST,
+                        message = "OpenSubsonic server returned a redirect (HTTP ${response.code}); redirects are disabled to prevent credential leakage."
+                    )
+
+                    response.code == 401 || response.code == 403 -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.AUTHENTICATION,
+                        message = "OpenSubsonic server rejected authentication (HTTP ${response.code})."
+                    )
+
+                    response.code == 429 -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.RATE_LIMITED,
+                        message = "OpenSubsonic server rate-limited request (HTTP 429)."
+                    )
+
+                    response.code >= 500 -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.UPSTREAM_UNAVAILABLE,
+                        message = "OpenSubsonic server error (HTTP ${response.code})."
+                    )
+
+                    !response.isSuccessful -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.INVALID_REQUEST,
+                        message = "OpenSubsonic server returned HTTP ${response.code}."
+                    )
+
+                    body.isBlank() -> throw DownloadSourceLookupException(
+                        errorType = ResolverErrorType.UNKNOWN,
+                        message = "OpenSubsonic server returned an empty response."
+                    )
+
+                    else -> body
+                }
+            }
+        } catch (e: DownloadSourceLookupException) {
+            throw e
+        } catch (e: SocketTimeoutException) {
+            throw DownloadSourceLookupException(
+                errorType = ResolverErrorType.TIMEOUT,
+                message = "OpenSubsonic request timed out after ${config.timeoutMs}ms.",
+                cause = e
+            )
+        } catch (e: IOException) {
+            throw DownloadSourceLookupException(
+                errorType = ResolverErrorType.NETWORK,
+                message = "Network error communicating with OpenSubsonic server.",
+                cause = e
+            )
+        }
+    }
+
     companion object {
+        fun buildPingUrl(config: OpenSubsonicServerConfig): HttpUrl {
+            return buildBaseEndpointBuilder(config, "rest/ping.view").build()
+        }
+
         fun buildSearch3Url(
             config: OpenSubsonicServerConfig,
             query: String,
             songCount: Int
         ): HttpUrl {
+            return buildBaseEndpointBuilder(config, "rest/search3.view")
+                .addQueryParameter("query", query)
+                .addQueryParameter("artistCount", "0")
+                .addQueryParameter("albumCount", "0")
+                .addQueryParameter("songCount", songCount.toString())
+                .build()
+        }
+
+        private fun buildBaseEndpointBuilder(
+            config: OpenSubsonicServerConfig,
+            endpointPath: String
+        ): HttpUrl.Builder {
             val base = config.serverBaseUrl.trim().trimEnd('/')
             val parsedBase = base.toHttpUrlOrNull()
                 ?: throw DownloadSourceLookupException(
@@ -136,11 +170,7 @@ class OkHttpOpenSubsonicClient(
             }
 
             val builder = parsedBase.newBuilder()
-                .addPathSegments("rest/search3.view")
-                .addQueryParameter("query", query)
-                .addQueryParameter("artistCount", "0")
-                .addQueryParameter("albumCount", "0")
-                .addQueryParameter("songCount", songCount.toString())
+                .addPathSegments(endpointPath)
                 .addQueryParameter("f", "json")
                 .addQueryParameter("v", config.apiVersion)
                 .addQueryParameter("c", config.clientName)
@@ -169,10 +199,54 @@ class OkHttpOpenSubsonicClient(
                 }
             }
 
-            return builder.build()
+            return builder
+        }
+
+        fun parsePingResponse(rawJson: String): OpenSubsonicPingResponse {
+            val subsonic = parseAndValidateEnvelope(rawJson)
+            return OpenSubsonicPingResponse(
+                serverVersion = optNonBlank(subsonic, "serverVersion") ?: optNonBlank(subsonic, "version"),
+                serverType = optNonBlank(subsonic, "type"),
+                openSubsonic = subsonic.optBoolean("openSubsonic", false)
+            )
         }
 
         fun parseSearch3Response(rawJson: String): List<OpenSubsonicSongDto> {
+            val subsonic = parseAndValidateEnvelope(rawJson)
+
+            val searchResult = subsonic.optJSONObject("searchResult3") ?: return emptyList()
+            val songs = searchResult.optJSONArray("song") ?: return emptyList()
+            val out = mutableListOf<OpenSubsonicSongDto>()
+
+            for (i in 0 until songs.length()) {
+                val obj = songs.optJSONObject(i) ?: continue
+                val id = optNonBlank(obj, "id") ?: continue
+                val title = optNonBlank(obj, "title") ?: continue
+                val artist = optNonBlank(obj, "artist") ?: continue
+
+                out.add(
+                    OpenSubsonicSongDto(
+                        id = id,
+                        title = title,
+                        artist = artist,
+                        album = optNonBlank(obj, "album"),
+                        durationSeconds = optPositiveInt(obj, "duration"),
+                        trackNumber = optPositiveInt(obj, "track"),
+                        year = optPositiveInt(obj, "year"),
+                        isrcs = extractIsrcs(obj),
+                        musicBrainzId = optNonBlank(obj, "musicBrainzId"),
+                        suffix = optNonBlank(obj, "suffix"),
+                        contentType = optNonBlank(obj, "contentType"),
+                        bitRate = optPositiveInt(obj, "bitRate"),
+                        bitDepth = optPositiveInt(obj, "bitDepth"),
+                        samplingRate = optPositiveInt(obj, "samplingRate")
+                    )
+                )
+            }
+            return out
+        }
+
+        private fun parseAndValidateEnvelope(rawJson: String): JSONObject {
             val root = try {
                 JSONObject(rawJson)
             } catch (e: JSONException) {
@@ -210,37 +284,7 @@ class OkHttpOpenSubsonicClient(
                     message = "Unexpected OpenSubsonic response status."
                 )
             }
-
-            val searchResult = subsonic.optJSONObject("searchResult3") ?: return emptyList()
-            val songs = searchResult.optJSONArray("song") ?: return emptyList()
-            val out = mutableListOf<OpenSubsonicSongDto>()
-
-            for (i in 0 until songs.length()) {
-                val obj = songs.optJSONObject(i) ?: continue
-                val id = optNonBlank(obj, "id") ?: continue
-                val title = optNonBlank(obj, "title") ?: continue
-                val artist = optNonBlank(obj, "artist") ?: continue
-
-                out.add(
-                    OpenSubsonicSongDto(
-                        id = id,
-                        title = title,
-                        artist = artist,
-                        album = optNonBlank(obj, "album"),
-                        durationSeconds = optPositiveInt(obj, "duration"),
-                        trackNumber = optPositiveInt(obj, "track"),
-                        year = optPositiveInt(obj, "year"),
-                        isrcs = extractIsrcs(obj),
-                        musicBrainzId = optNonBlank(obj, "musicBrainzId"),
-                        suffix = optNonBlank(obj, "suffix"),
-                        contentType = optNonBlank(obj, "contentType"),
-                        bitRate = optPositiveInt(obj, "bitRate"),
-                        bitDepth = optPositiveInt(obj, "bitDepth"),
-                        samplingRate = optPositiveInt(obj, "samplingRate")
-                    )
-                )
-            }
-            return out
+            return subsonic
         }
 
         fun isAllowedLocalHttpHost(rawHost: String): Boolean {

@@ -8,6 +8,12 @@ import com.example.catalog.provider.ItunesCatalogAdapter
 import com.example.catalog.remote.OkHttpItunesCatalogClient
 import com.example.catalog.remote.OkHttpMusicBrainzCatalogClient
 import com.example.catalog.repository.LocalCatalogRepository
+import com.example.catalog.resolver.DownloadSourceResolver
+import com.example.catalog.resolver.opensubsonic.AndroidKeystoreOpenSubsonicConfigStore
+import com.example.catalog.resolver.opensubsonic.ConfiguredOpenSubsonicResolver
+import com.example.catalog.resolver.opensubsonic.OkHttpOpenSubsonicClient
+import com.example.catalog.resolver.opensubsonic.OpenSubsonicConfigRepository
+import com.example.catalog.resolver.opensubsonic.OpenSubsonicConnectionValidator
 import com.example.core.config.SessionConfigRepository
 import com.example.core.security.AndroidKeystoreTokenStore
 import com.example.data.remote.OkHttpFlacdlApiClient
@@ -35,17 +41,40 @@ class TesterAppContainer(appContext: Context) {
     )
     val directDownloadManager = DirectDownloadManager(context = appContext.applicationContext)
 
+    private val sharedHttpClient by lazy {
+        OkHttpFlacdlApiClient.defaultOkHttpClient()
+    }
+
     // Independent Local Catalog Engine (Phase 2A) — lazy-initialized, shares OkHttp client conventions
     val localCatalogDatabase: LocalCatalogDatabase by lazy {
         LocalCatalogDatabase.create(appContext.applicationContext)
     }
 
     val localCatalogRepository: LocalCatalogRepository by lazy {
-        val sharedHttpClient = OkHttpFlacdlApiClient.defaultOkHttpClient()
         LocalCatalogRepository(
             database = localCatalogDatabase,
             catalogProvider = ItunesCatalogAdapter(OkHttpItunesCatalogClient(client = sharedHttpClient)),
             musicBrainzProvider = OkHttpMusicBrainzCatalogClient(client = sharedHttpClient)
+        )
+    }
+
+    // OpenSubsonic Resolver Configuration & Application-Level Resolver Wiring (Phase 2D.9)
+    val openSubsonicConfigRepository: OpenSubsonicConfigRepository by lazy {
+        OpenSubsonicConfigRepository(
+            store = AndroidKeystoreOpenSubsonicConfigStore(appContext.applicationContext)
+        )
+    }
+
+    val openSubsonicConnectionValidator: OpenSubsonicConnectionValidator by lazy {
+        OpenSubsonicConnectionValidator(
+            clientFactory = { cfg -> OkHttpOpenSubsonicClient(cfg, sharedHttpClient) }
+        )
+    }
+
+    val downloadSourceResolver: DownloadSourceResolver by lazy {
+        ConfiguredOpenSubsonicResolver(
+            configRepository = openSubsonicConfigRepository,
+            clientFactory = { cfg -> OkHttpOpenSubsonicClient(cfg, sharedHttpClient) }
         )
     }
 
