@@ -17,6 +17,7 @@ import com.example.domain.SearchTracksUseCase
 import com.example.domain.SendDiagnosticReportUseCase
 import com.example.domain.TestApiConnectionUseCase
 import com.example.download.DirectDownloadManager
+import com.example.ui.catalog.CatalogViewModel
 import com.example.ui.dashboard.DashboardViewModel
 import com.example.ui.download.DirectDownloadViewModel
 import com.example.ui.handoff.HandoffViewModel
@@ -71,6 +72,8 @@ class TesterAppContainer(appContext: Context) {
                         directDownloadManager,
                         sendDiagnosticReportUseCase
                     ) as T
+                modelClass.isAssignableFrom(CatalogViewModel::class.java) ->
+                    CatalogViewModel(localCatalogRepository) as T
                 else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }
         }

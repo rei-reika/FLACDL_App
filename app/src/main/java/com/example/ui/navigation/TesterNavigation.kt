@@ -1,11 +1,16 @@
 package com.example.ui.navigation
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Dashboard
@@ -15,6 +20,7 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -25,11 +31,13 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,11 +50,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.example.di.TesterAppContainer
+import com.example.ui.catalog.AlbumDetailScreen
+import com.example.ui.catalog.ArtistDetailScreen
+import com.example.ui.catalog.CatalogSearchScreen
+import com.example.ui.catalog.CatalogViewModel
 import com.example.ui.components.ModeChipButton
 import com.example.ui.components.ModeConfigBottomSheet
 import com.example.ui.dashboard.DashboardScreen
@@ -57,6 +71,7 @@ import com.example.ui.handoff.HandoffScreen
 import com.example.ui.handoff.HandoffViewModel
 import com.example.ui.search.SearchScreen
 import com.example.ui.search.SearchViewModel
+import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.HairlineBorder
 import com.example.ui.worker.WorkerMonitorScreen
 import com.example.ui.worker.WorkerMonitorViewModel
@@ -67,6 +82,12 @@ object TesterRoutes {
     const val ROUTE_HANDOFF = "handoff"
     const val ROUTE_WORKER = "worker"
     const val ROUTE_DOWNLOAD = "download"
+    const val ROUTE_CATALOG = "catalog"
+    const val ROUTE_CATALOG_ARTIST = "catalog/artist/{artistId}"
+    const val ROUTE_CATALOG_ALBUM = "catalog/album/{albumId}"
+
+    fun artistDetailRoute(artistId: Long): String = "catalog/artist/$artistId"
+    fun albumDetailRoute(albumId: Long): String = "catalog/album/$albumId"
 }
 
 enum class TesterDestination(
@@ -122,9 +143,11 @@ fun TesterAppRoot(
     val handoffViewModel: HandoffViewModel = viewModel(factory = container.viewModelFactory)
     val workerMonitorViewModel: WorkerMonitorViewModel = viewModel(factory = container.viewModelFactory)
     val directDownloadViewModel: DirectDownloadViewModel = viewModel(factory = container.viewModelFactory)
+    val catalogViewModel: CatalogViewModel = viewModel(factory = container.viewModelFactory)
 
     val dashboardState by dashboardViewModel.uiState.collectAsStateWithLifecycle()
     var showConfigSheet by remember { mutableStateOf(false) }
+    val isCatalogRoute = currentRoute.startsWith(TesterRoutes.ROUTE_CATALOG)
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val useNavigationRail = maxWidth >= 600.dp
@@ -142,6 +165,30 @@ fun TesterAppRoot(
                             )
                         },
                         actions = {
+                            OutlinedButton(
+                                onClick = { navigateSingleTop(navController, TesterRoutes.ROUTE_CATALOG) },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isCatalogRoute) CyanAccent else HairlineBorder
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier
+                                    .padding(end = 6.dp)
+                                    .testTag("open_catalog_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.LibraryMusic,
+                                    contentDescription = "Buka Local Catalog",
+                                    tint = if (isCatalogRoute) CyanAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Catalog",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (isCatalogRoute) CyanAccent else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                             ModeChipButton(
                                 mode = dashboardState.config.mode,
                                 onClick = { showConfigSheet = true },
@@ -295,6 +342,83 @@ fun TesterAppRoot(
                             onSendDiagnosticReport = { directDownloadViewModel.sendDiagnosticReport() },
                             onGoToWorkerMonitor = {
                                 navigateSingleTop(navController, TesterRoutes.ROUTE_WORKER)
+                            }
+                        )
+                    }
+
+                    composable(TesterRoutes.ROUTE_CATALOG) {
+                        val catalogSearchState by catalogViewModel.searchUiState.collectAsStateWithLifecycle()
+                        CatalogSearchScreen(
+                            uiState = catalogSearchState,
+                            onQueryChanged = { catalogViewModel.onQueryChanged(it) },
+                            onClearQuery = { catalogViewModel.clearQuery() },
+                            onCategorySelected = { catalogViewModel.onCategorySelected(it) },
+                            onSearchSubmit = { catalogViewModel.submitLocalSearch() },
+                            onSyncQuery = { catalogViewModel.syncCurrentQuery() },
+                            onLoadMore = { catalogViewModel.loadMore(it) },
+                            onArtistClick = { artistId ->
+                                navController.navigate(TesterRoutes.artistDetailRoute(artistId))
+                            },
+                            onAlbumClick = { albumId ->
+                                navController.navigate(TesterRoutes.albumDetailRoute(albumId))
+                            }
+                        )
+                    }
+
+                    composable(
+                        route = TesterRoutes.ROUTE_CATALOG_ARTIST,
+                        arguments = listOf(
+                            navArgument("artistId") { type = NavType.LongType }
+                        )
+                    ) { backStackEntry ->
+                        val artistId = backStackEntry.arguments?.getLong("artistId") ?: -1L
+                        LaunchedEffect(artistId) {
+                            if (artistId > 0L) {
+                                catalogViewModel.loadArtistDetail(artistId)
+                            }
+                        }
+                        val artistState by catalogViewModel.artistDetailUiState.collectAsStateWithLifecycle()
+                        ArtistDetailScreen(
+                            uiState = artistState,
+                            onBack = { navController.popBackStack() },
+                            onSyncAlbums = {
+                                if (artistId > 0L) catalogViewModel.syncArtistAlbums(artistId)
+                            },
+                            onLoadMoreAlbums = { catalogViewModel.loadMoreArtistAlbums() },
+                            onAlbumClick = { albumId ->
+                                navController.navigate(TesterRoutes.albumDetailRoute(albumId))
+                            },
+                            onRetry = {
+                                if (artistId > 0L) catalogViewModel.loadArtistDetail(artistId)
+                            }
+                        )
+                    }
+
+                    composable(
+                        route = TesterRoutes.ROUTE_CATALOG_ALBUM,
+                        arguments = listOf(
+                            navArgument("albumId") { type = NavType.LongType }
+                        )
+                    ) { backStackEntry ->
+                        val albumId = backStackEntry.arguments?.getLong("albumId") ?: -1L
+                        LaunchedEffect(albumId) {
+                            if (albumId > 0L) {
+                                catalogViewModel.loadAlbumDetail(albumId)
+                            }
+                        }
+                        val albumState by catalogViewModel.albumDetailUiState.collectAsStateWithLifecycle()
+                        AlbumDetailScreen(
+                            uiState = albumState,
+                            onBack = { navController.popBackStack() },
+                            onArtistClick = { artistId ->
+                                navController.navigate(TesterRoutes.artistDetailRoute(artistId))
+                            },
+                            onSyncTracks = {
+                                if (albumId > 0L) catalogViewModel.syncAlbumTracks(albumId)
+                            },
+                            onLoadMoreTracks = { catalogViewModel.loadMoreAlbumTracks() },
+                            onRetry = {
+                                if (albumId > 0L) catalogViewModel.loadAlbumDetail(albumId)
                             }
                         )
                     }

@@ -63,7 +63,17 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all { test ->
+        test.systemProperty(
+          "flacdl.runLiveCatalogTest",
+          System.getProperty("flacdl.runLiveCatalogTest", "false")
+        )
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
