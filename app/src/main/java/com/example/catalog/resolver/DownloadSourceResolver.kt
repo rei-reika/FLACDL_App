@@ -25,6 +25,31 @@ interface DownloadSourceResolver {
 }
 
 /**
+ * Default placeholder resolver used when no authorized audio source provider is configured.
+ * Keeps catalog discovery strictly decoupled from source resolution without fabricating availability.
+ */
+object UnconfiguredDownloadSourceResolver : DownloadSourceResolver {
+    override val capabilities: DownloadSourceCapabilities = DownloadSourceCapabilities(
+        providerId = "unconfigured",
+        displayName = "No Source Configured",
+        supportsCandidateLookup = false,
+        supportsIsrcLookup = false,
+        supportsTextSearch = false,
+        supportsResolution = false,
+        requiresAuthentication = false,
+        timeoutMs = 0L,
+        maxCandidates = 0
+    )
+
+    override suspend fun resolve(track: CanonicalTrackIdentity): DownloadResolutionResult {
+        return DownloadResolutionResult.Unavailable(
+            providerId = capabilities.providerId,
+            reason = "No authorized download source provider is configured."
+        )
+    }
+}
+
+/**
  * Pure Kotlin domain orchestrator for download-source resolution.
  *
  * Flow:

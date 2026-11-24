@@ -76,7 +76,7 @@ jobs:
             --tests "com.example.MusicBrainzIsrcEnrichmentTest" \
             --tests "com.example.DownloadSourceResolverTest" \
             --tests "com.example.CachingDownloadSourceResolverTest" \
-            --tests "com.example.OpenSubsonicResolverIntegrationTest" \
+            --tests "com.example.SearchArchitectureFoundationTest" \
             --stacktrace
 
       - name: Run full unit test suite (manual dispatch option)

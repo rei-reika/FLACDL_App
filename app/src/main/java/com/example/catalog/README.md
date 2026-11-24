@@ -1,26 +1,21 @@
-# FLACDL Local Catalog Engine (Phase 2A)
+# FLACDL Catalog & Search Foundation
 
-Independent offline-first music catalog engine inside `FLACDL Direct Tester` (`com.flacdl.directtester`, package `com.example.catalog`).
+Independent offline-first music catalog and search architecture inside FLACDL Android (`com.flacdl.directtester`, package `com.example.catalog`).
 
-## Architecture
+## Architecture Boundaries
 
-- **Primary Discovery Provider:** Apple iTunes Search & Lookup API (`https://itunes.apple.com/search`, `/lookup`, `country=ID`, max `limit=200`, throttled to ~18 req/min via `CatalogRateLimiter.forItunes()`).
-- **Secondary Enrichment Provider:** MusicBrainz API (`https://musicbrainz.org/ws/2/`, descriptive `User-Agent`, strict 1 req/sec throttling + exponential backoff on HTTP 503). Used strictly on-demand via explicit enrichment methods — never on keystrokes and never blocking local search.
-- **Local Storage:** Room (`LocalCatalogDatabase`, `flacdl_local_catalog.db`, version `1`, explicit migration registry without destructive fallback).
-  - Normalized tables: `artists`, `albums`, `tracks`, `catalog_sync`, `catalog_cache`.
-  - Local auto-generated primary keys (`id`) are strictly separated from provider IDs (`provider`, `provider_*_id` unique composite indexes).
-  - Safe FK-preserving upserts (`findByProviderId` + `update` / `insert` inside `withTransaction`) prevent destructive `REPLACE` cascades.
-- **Offline Local Search:** Case-insensitive, whitespace-normalized SQL queries with deterministic ordering and `LIMIT`/`OFFSET` pagination (`CatalogPage<T>`).
+1. **Catalog Discovery (`provider/`, `search/`):**
+   - `CatalogProvider` abstraction (`ItunesCatalogAdapter` backed by Apple iTunes Search & Lookup API, throttled via `CatalogRateLimiter.forItunes()`).
+   - `CatalogDiscoveryGateway` & `StructuredTrackCandidate` provide a provider-agnostic boundary adaptable to either local Room+iTunes discovery or a future remote search backend.
+2. **Metadata Enrichment (`remote/`, `enrichment/`):**
+   - `MusicBrainzCatalogClient` (strict 1 req/sec throttling + exponential backoff on HTTP 503) enriches tracks with ISRC on-demand without duplicating search results.
+3. **Candidate Matching & Merging (`matching/`, `search/`):**
+   - `TrackMatcher` & `TrackTextNormalizer`: deterministic ISRC, normalized title/artist, album, and duration matching with confidence/evidence and ambiguity detection.
+   - `CandidateDeduplicator`: deterministic duplicate merging across providers while keeping internal match metadata separate from consumer UI fields.
+4. **Local Storage (`db/`, `repository/`):**
+   - Room (`LocalCatalogDatabase`, `flacdl_local_catalog.db`) with normalized `artists`, `albums`, `tracks`, `catalog_sync`, and `catalog_cache` tables and FK-preserving upserts.
+5. **Source Resolution (`resolver/`):**
+   - Strictly separated from catalog discovery via `DownloadSourceResolver`, `TrackMatchingDownloadSourceResolver`, `CachingDownloadSourceResolver`, and `UnconfiguredDownloadSourceResolver`.
+   - OpenSubsonic has been permanently removed from the architecture.
 
-## Explicit Boundaries
-
-- Zero dependency on LucidaDL Search or production VPS backend (`/root/t-bot/`).
-- Never fabricates or infers Amazon Music URLs from Apple or MusicBrainz IDs.
-- No fake playlists (playlist entities are out of scope until a verified playlist provider exists).
-- Artwork URLs are stored as metadata only and subject to Apple promotional usage guidelines.
-
-## Running Engine Tests
-
-```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.LocalCatalogEngineTest" --tests "com.example.FlacdlTesterUnitTest"
-```
+See `docs/FINAL_PHASE1_ARCHITECTURE.md` for the complete Phase 1 architecture, proposed future backend API contract, and consumer transition plan.

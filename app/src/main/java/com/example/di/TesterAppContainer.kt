@@ -9,11 +9,7 @@ import com.example.catalog.remote.OkHttpItunesCatalogClient
 import com.example.catalog.remote.OkHttpMusicBrainzCatalogClient
 import com.example.catalog.repository.LocalCatalogRepository
 import com.example.catalog.resolver.DownloadSourceResolver
-import com.example.catalog.resolver.opensubsonic.AndroidKeystoreOpenSubsonicConfigStore
-import com.example.catalog.resolver.opensubsonic.ConfiguredOpenSubsonicResolver
-import com.example.catalog.resolver.opensubsonic.OkHttpOpenSubsonicClient
-import com.example.catalog.resolver.opensubsonic.OpenSubsonicConfigRepository
-import com.example.catalog.resolver.opensubsonic.OpenSubsonicConnectionValidator
+import com.example.catalog.resolver.UnconfiguredDownloadSourceResolver
 import com.example.core.config.SessionConfigRepository
 import com.example.core.security.AndroidKeystoreTokenStore
 import com.example.data.remote.OkHttpFlacdlApiClient
@@ -29,7 +25,6 @@ import com.example.ui.dashboard.DashboardViewModel
 import com.example.ui.download.DirectDownloadViewModel
 import com.example.ui.handoff.HandoffViewModel
 import com.example.ui.search.SearchViewModel
-import com.example.ui.settings.OpenSubsonicSettingsViewModel
 import com.example.ui.worker.WorkerMonitorViewModel
 
 class TesterAppContainer(appContext: Context) {
@@ -59,25 +54,9 @@ class TesterAppContainer(appContext: Context) {
         )
     }
 
-    // OpenSubsonic Resolver Configuration & Application-Level Resolver Wiring (Phase 2D.9)
-    val openSubsonicConfigRepository: OpenSubsonicConfigRepository by lazy {
-        OpenSubsonicConfigRepository(
-            store = AndroidKeystoreOpenSubsonicConfigStore(appContext.applicationContext)
-        )
-    }
-
-    val openSubsonicConnectionValidator: OpenSubsonicConnectionValidator by lazy {
-        OpenSubsonicConnectionValidator(
-            clientFactory = { cfg -> OkHttpOpenSubsonicClient(cfg, sharedHttpClient) }
-        )
-    }
-
-    val downloadSourceResolver: DownloadSourceResolver by lazy {
-        ConfiguredOpenSubsonicResolver(
-            configRepository = openSubsonicConfigRepository,
-            clientFactory = { cfg -> OkHttpOpenSubsonicClient(cfg, sharedHttpClient) }
-        )
-    }
+    // Source resolution boundary — intentionally decoupled from catalog discovery.
+    // Remains extensible for future authorized source providers without bundling a server integration.
+    val downloadSourceResolver: DownloadSourceResolver = UnconfiguredDownloadSourceResolver
 
     private val testApiConnectionUseCase = TestApiConnectionUseCase(testerRepository)
     private val searchTracksUseCase = SearchTracksUseCase(testerRepository)
@@ -104,15 +83,7 @@ class TesterAppContainer(appContext: Context) {
                         sendDiagnosticReportUseCase
                     ) as T
                 modelClass.isAssignableFrom(CatalogViewModel::class.java) ->
-                    CatalogViewModel(
-                        repository = localCatalogRepository,
-                        downloadSourceResolver = downloadSourceResolver
-                    ) as T
-                modelClass.isAssignableFrom(OpenSubsonicSettingsViewModel::class.java) ->
-                    OpenSubsonicSettingsViewModel(
-                        configRepository = openSubsonicConfigRepository,
-                        connectionValidator = openSubsonicConnectionValidator
-                    ) as T
+                    CatalogViewModel(repository = localCatalogRepository) as T
                 else -> throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
             }
         }

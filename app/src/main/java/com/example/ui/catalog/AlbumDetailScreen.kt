@@ -23,7 +23,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Album
-import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.CircularProgressIndicator
@@ -33,7 +32,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,20 +40,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ui.components.EmptyStatePanel
 import com.example.ui.components.KeyValueTelemetryRow
-import com.example.ui.components.StatusPill
 import com.example.ui.components.TesterSectionCard
 import com.example.ui.components.TrackArtwork
 import com.example.ui.theme.CyanAccent
-import com.example.ui.theme.HairlineBorder
 import com.example.ui.theme.JetBrainsMonoFamily
-import com.example.ui.theme.StatusConnected
-import com.example.ui.theme.StatusConnectedContainer
-import com.example.ui.theme.StatusDisconnected
-import com.example.ui.theme.StatusDisconnectedContainer
-import com.example.ui.theme.StatusTesting
-import com.example.ui.theme.StatusTestingContainer
-import com.example.ui.theme.StatusUnknown
-import com.example.ui.theme.StatusUnknownContainer
 
 @Composable
 fun AlbumDetailScreen(
@@ -65,8 +53,6 @@ fun AlbumDetailScreen(
     onSyncTracks: () -> Unit,
     onLoadMoreTracks: () -> Unit,
     onRetry: () -> Unit,
-    onCheckSourceAvailability: () -> Unit = {},
-    onOpenServerSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val distinctDiscs = uiState.tracks.mapNotNull { it.discNumber }.distinct()
@@ -241,17 +227,6 @@ fun AlbumDetailScreen(
                     }
                 }
 
-                item(key = "album_source_availability") {
-                    AlbumSourceAvailabilitySection(
-                        hasConfiguredSource = uiState.hasConfiguredSource,
-                        hasTracks = uiState.tracks.isNotEmpty(),
-                        isResolving = uiState.isResolvingSources,
-                        summary = uiState.resolutionSummary,
-                        onCheckAvailability = onCheckSourceAvailability,
-                        onOpenServerSettings = onOpenServerSettings
-                    )
-                }
-
                 item(key = "album_tracklist_header") {
                     CatalogSectionHeader(
                         title = "Tracklist",
@@ -291,13 +266,10 @@ fun AlbumDetailScreen(
                                 items = discTracks,
                                 key = { "album_track_${it.id}" }
                             ) { track ->
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    CatalogTrackRow(
-                                        track = track,
-                                        showTrackNumber = true
-                                    )
-                                    TrackResolutionBadgeRow(status = uiState.trackResolutions[track.id])
-                                }
+                                CatalogTrackRow(
+                                    track = track,
+                                    showTrackNumber = true
+                                )
                             }
                         }
                     } else {
@@ -305,13 +277,10 @@ fun AlbumDetailScreen(
                             items = uiState.tracks,
                             key = { "album_track_${it.id}" }
                         ) { track ->
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                CatalogTrackRow(
-                                    track = track,
-                                    showTrackNumber = true
-                                )
-                                TrackResolutionBadgeRow(status = uiState.trackResolutions[track.id])
-                            }
+                            CatalogTrackRow(
+                                track = track,
+                                showTrackNumber = true
+                            )
                         }
                     }
 
@@ -342,133 +311,6 @@ fun AlbumDetailScreen(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun AlbumSourceAvailabilitySection(
-    hasConfiguredSource: Boolean,
-    hasTracks: Boolean,
-    isResolving: Boolean,
-    summary: String?,
-    onCheckAvailability: () -> Unit,
-    onOpenServerSettings: () -> Unit
-) {
-    TesterSectionCard(
-        modifier = Modifier.testTag("album_source_availability_card")
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Dns,
-                    contentDescription = null,
-                    tint = if (hasConfiguredSource) CyanAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-                Column {
-                    Text(
-                        text = "OpenSubsonic Availability",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        text = when {
-                            !hasConfiguredSource -> "Belum ada server OpenSubsonic aktif"
-                            summary != null -> summary
-                            else -> "Read-only • Periksa kandidat di server pribadi"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (!hasConfiguredSource) {
-                TextButton(
-                    onClick = onOpenServerSettings,
-                    modifier = Modifier.testTag("album_configure_servers_button")
-                ) {
-                    Text("Configure", color = CyanAccent)
-                }
-            } else {
-                OutlinedButton(
-                    onClick = onCheckAvailability,
-                    enabled = hasTracks && !isResolving,
-                    border = BorderStroke(1.dp, HairlineBorder),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.testTag("album_check_availability_button")
-                ) {
-                    if (isResolving) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = CyanAccent
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Checking...", style = MaterialTheme.typography.labelMedium)
-                    } else {
-                        Text("Check", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TrackResolutionBadgeRow(status: TrackResolutionStatusUi?) {
-    if (status == null || status is TrackResolutionStatusUi.Idle) return
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.Start
-    ) {
-        when (status) {
-            TrackResolutionStatusUi.Idle -> Unit
-            TrackResolutionStatusUi.Checking -> StatusPill(
-                text = "Memeriksa...",
-                dotColor = StatusTesting,
-                containerColor = StatusTestingContainer
-            )
-
-            is TrackResolutionStatusUi.Available -> StatusPill(
-                text = if (status.qualityHint != null) "Tersedia • ${status.qualityHint}" else "Tersedia",
-                dotColor = StatusConnected,
-                containerColor = StatusConnectedContainer
-            )
-
-            is TrackResolutionStatusUi.Ambiguous -> StatusPill(
-                text = "Ambigu (${status.candidateCount} kandidat)",
-                dotColor = StatusTesting,
-                containerColor = StatusTestingContainer
-            )
-
-            is TrackResolutionStatusUi.Unverified -> StatusPill(
-                text = "Belum terverifikasi",
-                dotColor = StatusTesting,
-                containerColor = StatusTestingContainer
-            )
-
-            is TrackResolutionStatusUi.Unavailable -> StatusPill(
-                text = "Tidak tersedia",
-                dotColor = StatusUnknown,
-                containerColor = StatusUnknownContainer
-            )
-
-            is TrackResolutionStatusUi.Error -> StatusPill(
-                text = "Error sumber",
-                dotColor = StatusDisconnected,
-                containerColor = StatusDisconnectedContainer
-            )
         }
     }
 }

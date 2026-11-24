@@ -36,12 +36,12 @@ class CachingDownloadSourceResolverTest {
 
     private fun resolvedFor(sourceId: String, expiresAtMs: Long): DownloadResolutionResult.Resolved {
         val cand = DownloadSourceCandidate(
-            providerId = "opensubsonic",
+            providerId = "mock_source",
             sourceTrackId = sourceId,
-            sourceReference = "opensubsonic://opensubsonic/song/$sourceId",
+            sourceReference = "source://mock_source/track/$sourceId",
             metadata = TrackMatchCandidate(
                 candidateId = sourceId,
-                providerId = "opensubsonic",
+                providerId = "mock_source",
                 title = "Kataomoi",
                 artist = "Aimer",
                 durationMs = 207_000L
@@ -49,7 +49,7 @@ class CachingDownloadSourceResolverTest {
         )
         return DownloadResolutionResult.Resolved(
             identity = ResolvedSourceIdentity(
-                providerId = "opensubsonic",
+                providerId = "mock_source",
                 sourceTrackId = sourceId,
                 sourceReference = cand.sourceReference,
                 resolvedAtMs = fakeNowMs,
@@ -165,7 +165,7 @@ class CachingDownloadSourceResolverTest {
         val delegate = CountingDelegateResolver {
             if (shouldFail) {
                 DownloadResolutionResult.Error(
-                    providerId = "opensubsonic",
+                    providerId = "mock_source",
                     errorType = ResolverErrorType.NETWORK,
                     message = "Temporary network drop",
                     retryable = true
@@ -195,8 +195,8 @@ class CachingDownloadSourceResolverTest {
     fun `unavailable result is cached within TTL and refreshed after expiry`() = runTest {
         val delegate = CountingDelegateResolver {
             DownloadResolutionResult.Unavailable(
-                providerId = "opensubsonic",
-                reason = "Track not in user library."
+                providerId = "mock_source",
+                reason = "Track not in source catalog."
             )
         }
         val caching = CachingDownloadSourceResolver(
@@ -282,8 +282,8 @@ class CachingDownloadSourceResolverTest {
         val calls = AtomicInteger(0)
 
         override val capabilities = DownloadSourceCapabilities(
-            providerId = "opensubsonic",
-            displayName = "OpenSubsonic Test"
+            providerId = "mock_source",
+            displayName = "Mock Source Provider"
         )
 
         override suspend fun resolve(track: CanonicalTrackIdentity): DownloadResolutionResult {

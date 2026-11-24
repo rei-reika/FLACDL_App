@@ -5,9 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.example.catalog.model.CatalogSyncResult
 import com.example.catalog.model.CatalogSyncStatus
 import com.example.catalog.repository.LocalCatalogRepository
-import com.example.catalog.resolver.CanonicalTrackIdentity
-import com.example.catalog.resolver.DownloadResolutionResult
-import com.example.catalog.resolver.DownloadSourceResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +20,7 @@ import kotlinx.coroutines.withContext
 class CatalogViewModel(
     private val repository: LocalCatalogRepository,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val debounceMs: Long = DEFAULT_DEBOUNCE_MS,
-    private val downloadSourceResolver: DownloadSourceResolver? = null
+    private val debounceMs: Long = DEFAULT_DEBOUNCE_MS
 ) : ViewModel() {
 
     private val _searchUiState = MutableStateFlow(CatalogSearchUiState())
@@ -39,7 +35,6 @@ class CatalogViewModel(
     private var searchDebounceJob: Job? = null
     private var artistDetailJob: Job? = null
     private var albumDetailJob: Job? = null
-    private var albumResolutionJob: Job? = null
 
     fun onQueryChanged(query: String) {
         _searchUiState.update {
@@ -595,14 +590,11 @@ class CatalogViewModel(
 
     fun loadAlbumDetail(albumId: Long) {
         albumDetailJob?.cancel()
-        albumResolutionJob?.cancel()
-        val hasSource = downloadSourceResolver?.capabilities?.supportsResolution == true
         albumDetailJob = viewModelScope.launch {
             _albumDetailUiState.update {
                 AlbumDetailUiState(
                     albumId = albumId,
-                    isLoading = true,
-                    hasConfiguredSource = hasSource
+                    isLoading = true
                 )
             }
             try {
@@ -733,132 +725,12 @@ class CatalogViewModel(
         }
     }
 
-    fun refreshAlbumSourceAvailabilityFlag() {
-        val hasSource = downloadSourceResolver?.capabilities?.supportsResolution == true
-        _albumDetailUiState.update { it.copy(hasConfiguredSource = hasSource) }
-    }
-
-    /**
-     * Explicit, user-triggered read-only source availability check for loaded album tracks.
-     * Never triggered automatically during recomposition and never initiates audio downloads.
-     */
-    fun checkAlbumSourceAvailability() {
-        val resolver = downloadSourceResolver ?: return
-        val currentState = _albumDetailUiState.value
-        val album = currentState.album ?: return
-        if (currentState.isResolvingSources || currentState.tracks.isEmpty()) return
-
-        if (!resolver.capabilities.supportsResolution) {
-            _albumDetailUiState.update {
-                it.copy(
-                    hasConfiguredSource = false,
-                    resolutionSummary = "Belum ada server OpenSubsonic aktif."
-                )
-            }
-            return
-        }
-
-        val tracksToCheck = currentState.tracks.take(MAX_TRACKS_PER_AVAILABILITY_CHECK)
-        val releaseYear = album.releaseYear?.toIntOrNull()
-
-        albumResolutionJob?.cancel()
-        albumResolutionJob = viewModelScope.launch {
-            val initialMap = currentState.trackResolutions.toMutableMap()
-            tracksToCheck.forEach { tr -> initialMap[tr.id] = TrackResolutionStatusUi.Checking }
-            _albumDetailUiState.update {
-                it.copy(
-                    hasConfiguredSource = true,
-                    isResolvingSources = true,
-                    trackResolutions = initialMap.toMap(),
-                    resolutionSummary = null
-                )
-            }
-
-            var availableCount = 0
-            var ambiguousCount = 0
-            var unverifiedCount = 0
-            var unavailableCount = 0
-            var errorCount = 0
-
-            val updatedMap = initialMap.toMutableMap()
-            try {
-                for (track in tracksToCheck) {
-                    val identity = CanonicalTrackIdentity(
-                        localTrackId = track.id,
-                        catalogProviderId = album.provider.ifBlank { "local_catalog" },
-                        catalogTrackId = track.id.toString(),
-                        title = track.title,
-                        artist = track.artistName,
-                        album = album.title,
-                        durationMs = track.durationMs,
-                        trackNumber = track.trackNumber,
-                        releaseYear = releaseYear,
-                        isrc = track.isrc
-                    )
-                    val uiStatus = when (val res = withContext(ioDispatcher) { resolver.resolve(identity) }) {
-                        is DownloadResolutionResult.Resolved -> {
-                            availableCount++
-                            val hint = res.candidate.qualityHints.firstOrNull { it == "FLAC" || it == "LOSSLESS" }
-                            TrackResolutionStatusUi.Available(qualityHint = hint)
-                        }
-
-                        is DownloadResolutionResult.Ambiguous -> {
-                            ambiguousCount++
-                            TrackResolutionStatusUi.Ambiguous(res.candidates.size)
-                        }
-
-                        is DownloadResolutionResult.Unverified -> {
-                            unverifiedCount++
-                            TrackResolutionStatusUi.Unverified(res.reason)
-                        }
-
-                        is DownloadResolutionResult.Unavailable -> {
-                            unavailableCount++
-                            TrackResolutionStatusUi.Unavailable(res.reason)
-                        }
-
-                        is DownloadResolutionResult.Error -> {
-                            errorCount++
-                            TrackResolutionStatusUi.Error(res.message)
-                        }
-                    }
-                    updatedMap[track.id] = uiStatus
-                    _albumDetailUiState.update { it.copy(trackResolutions = updatedMap.toMap()) }
-                }
-
-                val summaryParts = buildList {
-                    if (availableCount > 0) add("$availableCount tersedia")
-                    if (ambiguousCount > 0) add("$ambiguousCount ambigu")
-                    if (unverifiedCount > 0) add("$unverifiedCount belum terverifikasi")
-                    if (unavailableCount > 0) add("$unavailableCount tidak tersedia")
-                    if (errorCount > 0) add("$errorCount error")
-                }
-                _albumDetailUiState.update {
-                    it.copy(
-                        isResolvingSources = false,
-                        resolutionSummary = summaryParts.joinToString(" • ").ifEmpty { "Pemeriksaan selesai." }
-                    )
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                _albumDetailUiState.update {
-                    it.copy(
-                        isResolvingSources = false,
-                        resolutionSummary = "Pemeriksaan ketersediaan sumber terhenti."
-                    )
-                }
-            }
-        }
-    }
-
     companion object {
         const val DEFAULT_DEBOUNCE_MS = 300L
         const val ALL_SECTION_PAGE_SIZE = 10
         const val CATEGORY_PAGE_SIZE = 20
         const val DETAIL_PAGE_SIZE = 20
         const val TRACKLIST_PAGE_SIZE = 50
-        private const val MAX_TRACKS_PER_AVAILABILITY_CHECK = 20
 
         private const val SYNC_ARTIST_LIMIT = 20
         private const val SYNC_ALBUM_LIMIT = 25
